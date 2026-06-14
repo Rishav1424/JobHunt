@@ -1,10 +1,34 @@
-import { chromium, Browser, Page } from 'playwright';
+import { chromium } from 'playwright-extra';
+import stealth from 'puppeteer-extra-plugin-stealth';
+import { Browser, Page } from 'playwright';
 import { JobSource, JobListing, ScraperQuery } from './base';
 import { logger } from '../../core/logger';
 import { config } from '../../core/config';
 
+chromium.use(stealth());
+
 const DETAIL_TIMEOUT_MS = 12000;
 const MAX_JOBS_PER_ROLE = 15;
+
+const USER_AGENTS = [
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:123.0) Gecko/20100101 Firefox/123.0',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3 Safari/605.1.15',
+];
+
+const ACCEPT_LANGUAGES = [
+  'en-US,en;q=0.9',
+  'en-IN,en;q=0.9,hi;q=0.8',
+  'en-GB,en;q=0.9',
+  'en-US,en;q=0.8,en-GB;q=0.6',
+];
+
+function getRandomItem<T>(arr: T[]): T {
+  return arr[Math.floor(Math.random() * arr.length)];
+}
 
 /**
  * LinkedIn Jobs scraper — read-only, no login required.
@@ -30,16 +54,36 @@ export class LinkedInScraper extends JobSource {
       });
 
       const context = await browser.newContext({
-        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        userAgent: getRandomItem(USER_AGENTS),
         viewport: { width: 1440, height: 900 },
         locale: 'en-IN',
         timezoneId: 'Asia/Kolkata',
-        extraHTTPHeaders: { 'Accept-Language': 'en-IN,en;q=0.9' },
+        extraHTTPHeaders: {
+          'Accept-Language': getRandomItem(ACCEPT_LANGUAGES),
+        },
       });
 
-      // Block heavy resources to speed up scraping
-      await context.route('**/*.{png,jpg,jpeg,gif,svg,ico,woff,woff2,mp4,webm}', (r) => r.abort());
-      await context.route('**/li/track*', (r) => r.abort());
+      // Strictly intercept and abort CSS, images, fonts, media, and tracking scripts
+      await context.route('**/*', (route) => {
+        const url = route.request().url().toLowerCase();
+        const resourceType = route.request().resourceType();
+        if (
+          resourceType === 'image' ||
+          resourceType === 'stylesheet' ||
+          resourceType === 'font' ||
+          resourceType === 'media' ||
+          url.includes('google-analytics') ||
+          url.includes('analytics') ||
+          url.includes('tracking') ||
+          url.includes('li/track') ||
+          url.includes('doubleclick') ||
+          url.includes('hotjar')
+        ) {
+          route.abort();
+        } else {
+          route.continue();
+        }
+      });
 
       const listPage = await context.newPage();
       const listings: JobListing[] = [];
@@ -142,7 +186,7 @@ export class LinkedInScraper extends JobSource {
 
   /**
    * Open a job detail page and extract the full description.
-   * Falls back to a meaningful placeholder if it fails.
+   * Checks for application/ld+json (JSON-LD) first, falling back to DOM selectors.
    */
   private async fetchJobDescription(
     context: import('playwright').BrowserContext,
@@ -153,24 +197,57 @@ export class LinkedInScraper extends JobSource {
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: DETAIL_TIMEOUT_MS });
       await page.waitForTimeout(1500);
 
-      const description = await page.evaluate(() => {
-        // Try multiple selector patterns LinkedIn uses
-        const selectors = [
-          '.show-more-less-html__markup',
-          '.description__text',
-          '[class*="jobs-description"]',
-          '.jobs-description-content__text',
-          'section.description',
-        ];
-        for (const sel of selectors) {
-          const el = document.querySelector(sel);
-          if (el?.textContent?.trim()) return el.textContent.trim();
+      // 1. Shift to JSON-LD Data Extraction
+      const jsonLdDescription = await page.evaluate(() => {
+        const scripts = document.querySelectorAll('script[type="application/ld+json"]');
+        for (const script of Array.from(scripts)) {
+          try {
+            const parsed = JSON.parse(script.textContent || '');
+            if (Array.isArray(parsed)) {
+              const job = parsed.find((item: any) => item['@type'] === 'JobPosting');
+              if (job && job.description) return job.description;
+            } else if (
+              (parsed['@type'] === 'JobPosting' || parsed['@context']?.includes('schema.org')) &&
+              parsed.description
+            ) {
+              return parsed.description;
+            }
+          } catch {
+            // skip
+          }
         }
-        // Fall back to any large text block
-        const divs = Array.from(document.querySelectorAll('div'));
-        const large = divs.find((d) => (d.textContent?.length || 0) > 500 && !d.querySelector('nav'));
-        return large?.textContent?.trim() || '';
+        return null;
       });
+
+      let description = '';
+      if (jsonLdDescription) {
+        // Strip HTML tags from JSON-LD description
+        description = jsonLdDescription
+          .replace(/<[^>]*>/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim();
+      }
+
+      // 2. DOM Selector Fallback if JSON-LD wasn't present or didn't contain description
+      if (!description) {
+        description = await page.evaluate(() => {
+          const selectors = [
+            '.show-more-less-html__markup',
+            '.description__text',
+            '[class*="jobs-description"]',
+            '.jobs-description-content__text',
+            'section.description',
+          ];
+          for (const sel of selectors) {
+            const el = document.querySelector(sel);
+            if (el?.textContent?.trim()) return el.textContent.trim();
+          }
+          // Fall back to any large text block
+          const divs = Array.from(document.querySelectorAll('div'));
+          const large = divs.find((d) => (d.textContent?.length || 0) > 500 && !d.querySelector('nav'));
+          return large?.textContent?.trim() || '';
+        });
+      }
 
       return description.slice(0, 8000) || `${url} — description unavailable`;
     } catch (err) {

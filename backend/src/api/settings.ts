@@ -124,7 +124,7 @@ settingsRouter.patch('/profile', async (req: Request, res: Response) => {
 
     // Recompute embedding in background if resume changed
     if (data.baseResumeLatex) {
-      ensureProfileEmbedding().catch((err) =>
+      ensureProfileEmbedding().catch((err: any) =>
         logger.error('Failed to recompute profile embedding', { err })
       );
     }

@@ -1,7 +1,28 @@
-import { chromium, Browser, Page } from 'playwright';
+import { chromium } from 'playwright-extra';
+import stealth from 'puppeteer-extra-plugin-stealth';
+import { Browser, Page } from 'playwright';
 import { JobSource, JobListing, ScraperQuery } from './base';
 import { logger } from '../../core/logger';
 import { config } from '../../core/config';
+
+chromium.use(stealth());
+
+const USER_AGENTS = [
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:123.0) Gecko/20100101 Firefox/123.0',
+];
+
+const ACCEPT_LANGUAGES = [
+  'en-US,en;q=0.9',
+  'en-IN,en;q=0.9,hi;q=0.8',
+  'en-GB,en;q=0.9',
+];
+
+function getRandomItem<T>(arr: T[]): T {
+  return arr[Math.floor(Math.random() * arr.length)];
+}
 
 /**
  * Wellfound (AngelList) scraper.
@@ -23,7 +44,7 @@ export class WellfoundScraper extends JobSource {
       for (const url of searchUrls) {
         try {
           logger.info(`Wellfound: Scraping ${url}`);
-          await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
+          await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
           await page.waitForTimeout(2000);
 
           // Scroll to load more jobs
@@ -134,23 +155,43 @@ export class WellfoundScraper extends JobSource {
         '--disable-setuid-sandbox',
         '--disable-blink-features=AutomationControlled',
         '--disable-dev-shm-usage',
+        '--disable-extensions',
+        '--disable-gpu',
       ],
     });
   }
 
   private async newStealthPage(browser: Browser): Promise<Page> {
     const context = await browser.newContext({
-      userAgent:
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      userAgent: getRandomItem(USER_AGENTS),
       viewport: { width: 1920, height: 1080 },
       locale: 'en-IN',
       timezoneId: 'Asia/Kolkata',
+      extraHTTPHeaders: {
+        'Accept-Language': getRandomItem(ACCEPT_LANGUAGES),
+      },
     });
 
-    // Block unnecessary resources to speed up scraping
-    await context.route('**/*.{png,jpg,jpeg,gif,svg,ico,woff,woff2}', (route) =>
-      route.abort()
-    );
+    // Block unnecessary resources (stylesheets, images, fonts, trackers)
+    await context.route('**/*', (route) => {
+      const url = route.request().url().toLowerCase();
+      const resourceType = route.request().resourceType();
+      if (
+        resourceType === 'image' ||
+        resourceType === 'stylesheet' ||
+        resourceType === 'font' ||
+        resourceType === 'media' ||
+        url.includes('google-analytics') ||
+        url.includes('analytics') ||
+        url.includes('tracking') ||
+        url.includes('doubleclick') ||
+        url.includes('hotjar')
+      ) {
+        route.abort();
+      } else {
+        route.continue();
+      }
+    });
 
     return context.newPage();
   }

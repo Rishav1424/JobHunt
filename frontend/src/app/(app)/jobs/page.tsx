@@ -3,22 +3,34 @@
 import { useEffect, useState, useCallback } from 'react';
 import { jobsApi, Job } from '@/lib/api';
 import JobCard from '@/components/JobCard';
-import { Search, Filter, SlidersHorizontal } from 'lucide-react';
-import { clsx } from 'clsx';
+import { Search, SlidersHorizontal } from 'lucide-react';
 import { useSocket } from '@/lib/socket';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Input } from '@/components/ui/input';
+import { Skeleton } from '@/components/ui/skeleton';
+import {
+  Pagination,
+  PaginationContent,
+  PaginationItem,
+  PaginationNext,
+  PaginationPrevious,
+} from '@/components/ui/pagination';
+import { Button } from '@/components/ui/button';
 
 const STATUS_TABS = [
   { value: 'SCORED', label: 'Pending Review' },
   { value: 'APPROVED', label: 'Approved' },
   { value: 'APPLIED', label: 'Applied' },
-  { value: '', label: 'All' },
-];
+  { value: 'ALL', label: 'All Jobs' },
+] as const;
+
+type StatusTabValue = typeof STATUS_TABS[number]['value'];
 
 export default function JobsPage() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState('SCORED');
+  const [activeTab, setActiveTab] = useState<StatusTabValue>('SCORED');
   const [search, setSearch] = useState('');
   const [page, setPage] = useState(1);
 
@@ -26,8 +38,12 @@ export default function JobsPage() {
     setLoading(true);
     try {
       const params: Record<string, string | number> = { page, limit: 24 };
-      if (activeTab) params.status = activeTab;
-      if (search) params.search = search;
+      if (activeTab !== 'ALL') {
+        params.status = activeTab;
+      }
+      if (search) {
+        params.search = search;
+      }
 
       const data = await jobsApi.list(params);
       setJobs(data.jobs);
@@ -40,13 +56,17 @@ export default function JobsPage() {
   useEffect(() => {
     setPage(1);
     loadJobs();
-  }, [activeTab, search]);
+  }, [activeTab, search, loadJobs]);
 
-  useEffect(() => { loadJobs(); }, [page]);
+  useEffect(() => {
+    loadJobs();
+  }, [page, loadJobs]);
 
   // Real-time: refresh when new jobs are scored
   useSocket('job:scored', () => {
-    if (activeTab === 'SCORED' || activeTab === '') loadJobs();
+    if (activeTab === 'SCORED' || activeTab === 'ALL') {
+      loadJobs();
+    }
   });
 
   const handleApprove = async (id: string) => {
@@ -67,74 +87,68 @@ export default function JobsPage() {
     setJobs((prev) => prev.filter((j) => j.id !== id));
   };
 
+  const totalPages = Math.ceil(total / 24);
+
   return (
-    <div className="p-6 space-y-5 max-w-7xl mx-auto">
+    <div className="p-4 md:p-6 space-y-6 max-w-7xl mx-auto">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-white">Job Queue</h1>
-          <p className="text-gray-400 text-sm mt-0.5">{total} jobs · Sorted by fit score</p>
+          <h1 className="text-2xl md:text-3xl font-extrabold tracking-tight">Job Queue</h1>
+          <p className="text-muted-foreground text-sm mt-1">{total} jobs matching criteria · Sorted by fit score</p>
         </div>
       </div>
 
-      {/* Filters */}
-      <div className="flex flex-col sm:flex-row gap-3">
+      {/* Filters Toolbar */}
+      <div className="flex flex-col sm:flex-row gap-3 items-stretch justify-between">
         {/* Search */}
-        <div className="relative flex-1 max-w-sm">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
-          <input
+        <div className="relative flex-1 max-w-md">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+          <Input
             type="text"
-            placeholder="Search jobs or companies..."
+            placeholder="Search roles, tech, or companies..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="w-full pl-9 pr-4 py-2 bg-gray-900 border border-gray-700 rounded-lg text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 transition-colors"
+            className="pl-9"
           />
         </div>
 
-        {/* Status Tabs */}
-        <div className="flex items-center gap-1 bg-gray-900 border border-gray-800 rounded-lg p-1">
-          {STATUS_TABS.map((tab) => (
-            <button
-              key={tab.value}
-              onClick={() => setActiveTab(tab.value)}
-              className={clsx(
-                'px-3 py-1.5 rounded-md text-xs font-medium transition-all',
-                activeTab === tab.value
-                  ? 'bg-blue-600 text-white'
-                  : 'text-gray-400 hover:text-white hover:bg-gray-800'
-              )}
-            >
-              {tab.label}
-            </button>
-          ))}
-        </div>
+        {/* Shadcn Tabs for Status */}
+        <Tabs
+          value={activeTab}
+          onValueChange={(val) => setActiveTab(val as StatusTabValue)}
+          className="w-full sm:w-auto"
+        >
+          <TabsList className="grid w-full grid-cols-4">
+            {STATUS_TABS.map((tab) => (
+              <TabsTrigger key={tab.value} value={tab.value}>
+                {tab.label}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </Tabs>
       </div>
 
       {/* Job Grid */}
       {loading ? (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-6">
           {Array.from({ length: 6 }).map((_, i) => (
-            <div key={i} className="glass rounded-xl p-4 h-44 animate-pulse">
-              <div className="h-4 bg-gray-800 rounded w-3/4 mb-2" />
-              <div className="h-3 bg-gray-800 rounded w-1/2 mb-4" />
-              <div className="h-3 bg-gray-800 rounded w-full mb-2" />
-              <div className="h-3 bg-gray-800 rounded w-2/3" />
-            </div>
+            <Skeleton key={i} className="h-48 rounded-xl" />
           ))}
         </div>
       ) : jobs.length === 0 ? (
-        <div className="flex flex-col items-center justify-center py-20 text-center">
-          <SlidersHorizontal className="w-12 h-12 text-gray-700 mb-4" />
-          <p className="text-gray-400 font-medium">No jobs found</p>
-          <p className="text-gray-600 text-sm mt-1">
+        <div className="flex flex-col items-center justify-center py-20 text-center border rounded-2xl">
+          <SlidersHorizontal className="w-12 h-12 text-muted-foreground mb-4" />
+          <p className="font-bold text-lg">No jobs found</p>
+          <p className="text-muted-foreground text-sm mt-1 max-w-sm">
             {activeTab === 'SCORED'
-              ? 'No jobs pending review. Run a scrape to find new jobs!'
-              : 'Try changing the filter or search term.'}
+              ? 'No new roles pending review. Run a manual scraping task from settings or dashboard!'
+              : 'Try widening your search terms or checking different filter tabs.'}
           </p>
         </div>
       ) : (
         <>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-6">
             {jobs.map((job) => (
               <JobCard
                 key={job.id}
@@ -147,26 +161,28 @@ export default function JobsPage() {
           </div>
 
           {/* Pagination */}
-          {total > 24 && (
-            <div className="flex justify-center gap-2 pt-4">
-              <button
-                onClick={() => setPage((p) => Math.max(1, p - 1))}
-                disabled={page === 1}
-                className="px-3 py-1.5 text-xs rounded-md bg-gray-800 text-gray-300 disabled:opacity-40 hover:bg-gray-700 transition-colors"
-              >
-                Previous
-              </button>
-              <span className="px-3 py-1.5 text-xs text-gray-400">
-                Page {page} of {Math.ceil(total / 24)}
-              </span>
-              <button
-                onClick={() => setPage((p) => p + 1)}
-                disabled={page >= Math.ceil(total / 24)}
-                className="px-3 py-1.5 text-xs rounded-md bg-gray-800 text-gray-300 disabled:opacity-40 hover:bg-gray-700 transition-colors"
-              >
-                Next
-              </button>
-            </div>
+          {totalPages > 1 && (
+            <Pagination>
+              <PaginationContent>
+                <PaginationItem>
+                  <PaginationPrevious
+                    onClick={() => setPage((p) => Math.max(1, p - 1))}
+                    className={page === 1 ? 'pointer-events-none opacity-50' : 'cursor-pointer'}
+                  />
+                </PaginationItem>
+                <PaginationItem>
+                  <span className="text-sm text-muted-foreground px-3">
+                    Page {page} of {totalPages}
+                  </span>
+                </PaginationItem>
+                <PaginationItem>
+                  <PaginationNext
+                    onClick={() => setPage((p) => p + 1)}
+                    className={page >= totalPages ? 'pointer-events-none opacity-50' : 'cursor-pointer'}
+                  />
+                </PaginationItem>
+              </PaginationContent>
+            </Pagination>
           )}
         </>
       )}

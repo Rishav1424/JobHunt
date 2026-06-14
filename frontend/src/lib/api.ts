@@ -106,6 +106,7 @@ export interface Application {
   customNotes?: string;
   formAnswers?: Record<string, string>;
   appliedAt?: string;
+  createdAt?: string;
   job: Job;
   emailEvents: EmailEvent[];
 }

@@ -76,7 +76,6 @@ services:
         - action: rebuild
           path: ./backend/package.json
 
-
   # ─── BullMQ Worker ───────────────────────────────────────────────────────────
   worker:
     build:
@@ -114,7 +113,6 @@ services:
             - storage/
         - action: rebuild
           path: ./backend/package.json
-
 
   # ─── Bull Board (Queue Monitor UI) ───────────────────────────────────────────
   bullboard:
@@ -159,7 +157,6 @@ services:
             - .next/
         - action: rebuild
           path: ./frontend/package.json
-
 
 volumes:
   postgres_data:

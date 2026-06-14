@@ -12,8 +12,8 @@ The platform uses a **Human-in-the-Loop (Review Mode)** architecture split into 
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                    FRONTEND DASHBOARD                    │
-│              (Next.js 16 + Tailwind CSS v4)              │
+│                    FRONTEND DASHBOARD                   │
+│              (Next.js 16 + Tailwind CSS v4)             │
 │  - Job Feed    - Resume Studio    - Real-time Stats     │
 └───────────────┬────────────────────────▲────────────────┘
                 │ REST (Axios)           │ WebSockets (Socket.io)
@@ -23,8 +23,8 @@ The platform uses a **Human-in-the-Loop (Review Mode)** architecture split into 
 └───────────────┬────────────────────────┬────────────────┘
                 │ Enqueues Jobs          │ Queries / Persists
 ┌───────────────▼────────────────┐ ┌──────▼────────────────┐
-│      REDIS (BullMQ Queues)      │ │   DATABASE (Postgres) │
-│  - job-scraping  - job-scoring  │ │   - Prisma Client ORM │
+│      REDIS (BullMQ Queues)     │ │   DATABASE (Postgres) │
+│  - job-scraping  - job-scoring │ │   - Prisma Client ORM │
 └───────────────┬────────────────┘ └──────▲────────────────┘
                 │ Worker Processes        │ Reads / Writes
 ┌───────────────▼─────────────────────────┴────────────────┐

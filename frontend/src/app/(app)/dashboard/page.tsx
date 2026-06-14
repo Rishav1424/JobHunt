@@ -4,11 +4,15 @@ import { useEffect, useState, useCallback } from 'react';
 import { jobsApi } from '@/lib/api';
 import { useSocket } from '@/lib/socket';
 import {
-  Briefcase, TrendingUp, CheckCircle, Send,
-  RefreshCw, Zap, ArrowRight
+  Briefcase, TrendingUp, Send,
+  RefreshCw, Zap, ArrowRight, BarChart3
 } from 'lucide-react';
 import Link from 'next/link';
-import { clsx } from 'clsx';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Progress } from '@/components/ui/progress';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Skeleton } from '@/components/ui/skeleton';
 
 interface Stats {
   total: number;
@@ -22,22 +26,20 @@ interface Stats {
 
 const STAT_CARDS = [
   {
-    key: 'today', label: 'Jobs Today', icon: Zap,
-    color: 'text-blue-400', bg: 'bg-blue-600/10 border-blue-600/20',
+    key: 'today', label: 'Jobs Scraped Today', icon: Zap,
   },
   {
     key: 'scored', label: 'Pending Review', icon: Briefcase,
-    color: 'text-yellow-400', bg: 'bg-yellow-500/10 border-yellow-500/20',
   },
   {
-    key: 'approved', label: 'Approved', icon: TrendingUp,
-    color: 'text-indigo-400', bg: 'bg-indigo-500/10 border-indigo-500/20',
+    key: 'approved', label: 'Approved Roles', icon: TrendingUp,
   },
   {
-    key: 'applied', label: 'Applied', icon: Send,
-    color: 'text-emerald-400', bg: 'bg-emerald-500/10 border-emerald-500/20',
+    key: 'applied', label: 'Applications Sent', icon: Send,
   },
-];
+] as const;
+
+type StatKeys = 'today' | 'scored' | 'approved' | 'applied';
 
 export default function DashboardPage() {
   const [stats, setStats] = useState<Stats | null>(null);
@@ -77,130 +79,151 @@ export default function DashboardPage() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-full">
-        <div className="animate-spin w-8 h-8 border-2 border-blue-500 border-t-transparent rounded-full" />
+      <div className="p-4 md:p-6 space-y-6 max-w-6xl mx-auto">
+        <div className="flex items-center justify-between">
+          <div className="space-y-2">
+            <Skeleton className="h-8 w-48" />
+            <Skeleton className="h-4 w-80" />
+          </div>
+          <Skeleton className="h-10 w-36" />
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <Skeleton key={i} className="h-28 rounded-xl" />
+          ))}
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="p-6 space-y-6 max-w-6xl mx-auto">
+    <div className="p-4 md:p-6 space-y-6 max-w-6xl mx-auto">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-white">Dashboard</h1>
-          <p className="text-gray-400 text-sm mt-0.5">
-            Welcome back, Rishav. Your job hunt at a glance.
+          <h1 className="text-2xl md:text-3xl font-extrabold tracking-tight">Dashboard</h1>
+          <p className="text-muted-foreground text-sm mt-1">
+            Welcome back, Rishav. Your automated job hunt pipeline status.
           </p>
         </div>
-        <button
-          onClick={handleScrape}
-          disabled={scraping}
-          className={clsx(
-            'flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all',
-            scraping
-              ? 'bg-gray-700 text-gray-400 cursor-not-allowed'
-              : 'bg-blue-600 hover:bg-blue-500 text-white'
-          )}
-        >
-          <RefreshCw className={clsx('w-4 h-4', scraping && 'animate-spin')} />
-          {scraping ? 'Scraping...' : 'Run Scrape Now'}
-        </button>
+        <Button onClick={handleScrape} disabled={scraping}>
+          <RefreshCw className={`w-4 h-4 ${scraping ? 'animate-spin' : ''}`} />
+          {scraping ? 'Running Scraper...' : 'Run Scrape Now'}
+        </Button>
       </div>
 
-      {/* New jobs toast */}
+      {/* New jobs alert */}
       {newJobsFlash !== null && (
-        <div className="bg-green-500/15 border border-green-500/30 text-green-400 px-4 py-3 rounded-lg text-sm flex items-center gap-2 animate-pulse">
+        <Alert>
           <Zap className="w-4 h-4" />
-          {newJobsFlash} new jobs found! Scoring with Gemini...
-        </div>
+          <AlertDescription>
+            {newJobsFlash} new jobs discovered! Analyzing fit and compensation benchmarks with Gemini...
+          </AlertDescription>
+        </Alert>
       )}
 
       {/* Stat Cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        {STAT_CARDS.map(({ key, label, icon: Icon, color, bg }) => (
-          <div key={key} className={clsx('glass rounded-xl p-4 border', bg)}>
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-xs font-medium text-gray-400">{label}</span>
-              <Icon className={clsx('w-4 h-4', color)} />
-            </div>
-            <p className={clsx('text-2xl font-bold', color)}>
-              {stats?.[key as keyof Stats] ?? 0}
-            </p>
-          </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        {STAT_CARDS.map(({ key, label, icon: Icon }) => (
+          <Card key={key}>
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{label}</CardTitle>
+              <Icon className="w-4 h-4 text-muted-foreground" />
+            </CardHeader>
+            <CardContent>
+              <div className="text-3xl font-bold tracking-tight">
+                {stats?.[key as StatKeys] ?? 0}
+              </div>
+            </CardContent>
+          </Card>
         ))}
       </div>
 
       {/* Secondary row */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 md:gap-6">
         {/* Avg fit score */}
-        <div className="glass rounded-xl p-5 border border-gray-800">
-          <p className="text-xs text-gray-400 mb-1">Avg Fit Score</p>
-          <div className="flex items-end gap-2">
-            <p className="text-3xl font-bold text-white">
-              {stats?.avgFitScore ?? 0}
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Average Fit Score</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex items-baseline gap-2">
+              <span className="text-5xl font-extrabold">
+                {stats?.avgFitScore ?? 0}
+              </span>
+              <span className="text-muted-foreground text-sm font-semibold">/ 100</span>
+            </div>
+            
+            <div className="space-y-1">
+              <Progress value={stats?.avgFitScore ?? 0} className="h-2.5" />
+              <div className="flex justify-between text-[10px] text-muted-foreground">
+                <span>0</span>
+                <span>Threshold: 65</span>
+                <span>100</span>
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground leading-relaxed">
+              Based on your calibrated preferences. Active filters target Software Engineer / Backend roles offering ₹15 LPA+.
             </p>
-            <p className="text-gray-500 text-sm mb-1">/ 100</p>
-          </div>
-          {/* Score bar */}
-          <div className="mt-3 h-2 bg-gray-800 rounded-full overflow-hidden">
-            <div
-              className={clsx(
-                'h-full rounded-full transition-all duration-1000',
-                (stats?.avgFitScore || 0) >= 75 ? 'bg-green-500' :
-                (stats?.avgFitScore || 0) >= 55 ? 'bg-yellow-500' : 'bg-red-500'
-              )}
-              style={{ width: `${stats?.avgFitScore || 0}%` }}
-            />
-          </div>
-        </div>
+          </CardContent>
+        </Card>
 
         {/* Jobs by source */}
-        <div className="glass rounded-xl p-5 border border-gray-800 col-span-2">
-          <p className="text-xs text-gray-400 mb-3">Jobs by Source</p>
-          <div className="space-y-2">
-            {stats?.bySource.map(({ source, count }) => (
-              <div key={source} className="flex items-center gap-2">
-                <span className="text-xs text-gray-400 w-20 capitalize">{source}</span>
-                <div className="flex-1 h-1.5 bg-gray-800 rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-blue-500 rounded-full"
-                    style={{ width: `${(count / (stats.total || 1)) * 100}%` }}
-                  />
+        <Card className="lg:col-span-2">
+          <CardHeader className="pb-2 flex flex-row items-center justify-between">
+            <CardTitle className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Jobs by Source</CardTitle>
+            <BarChart3 className="w-4 h-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent className="space-y-3 pt-2">
+            {stats?.bySource && stats.bySource.length > 0 ? (
+              stats.bySource.map(({ source, count }) => (
+                <div key={source} className="space-y-1">
+                  <div className="flex items-center justify-between text-xs font-medium">
+                    <span className="capitalize">{source}</span>
+                    <span className="text-muted-foreground">{count} ({Math.round((count / (stats.total || 1)) * 100)}%)</span>
+                  </div>
+                  <Progress value={(count / (stats.total || 1)) * 100} className="h-2" />
                 </div>
-                <span className="text-xs text-gray-500 w-8 text-right">{count}</span>
-              </div>
-            ))}
-          </div>
-        </div>
+              ))
+            ) : (
+              <p className="text-xs text-muted-foreground py-4 text-center">No source distribution stats available yet.</p>
+            )}
+          </CardContent>
+        </Card>
       </div>
 
       {/* Quick Actions */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <Link href="/jobs?status=SCORED"
-          className="glass rounded-xl p-5 border border-gray-800 hover:border-blue-600/30 transition-all group">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm font-semibold text-white">Review Jobs</p>
-              <p className="text-xs text-gray-400 mt-0.5">
-                {stats?.scored || 0} jobs awaiting your review
-              </p>
-            </div>
-            <ArrowRight className="w-4 h-4 text-gray-600 group-hover:text-blue-400 transition-colors" />
-          </div>
+        <Link href="/jobs?status=SCORED">
+          <Card className="hover:bg-accent transition-colors cursor-pointer group">
+            <CardContent className="p-5 flex items-center justify-between">
+              <div>
+                <p className="text-sm font-bold group-hover:text-accent-foreground transition-colors">Review Scored Jobs</p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  {stats?.scored || 0} jobs awaiting your manual approval/skip decision.
+                </p>
+              </div>
+              <Button variant="outline" size="icon" className="shrink-0">
+                <ArrowRight className="w-4 h-4" />
+              </Button>
+            </CardContent>
+          </Card>
         </Link>
 
-        <Link href="/applications?status=APPROVED"
-          className="glass rounded-xl p-5 border border-gray-800 hover:border-blue-600/30 transition-all group">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm font-semibold text-white">Ready to Apply</p>
-              <p className="text-xs text-gray-400 mt-0.5">
-                {stats?.approved || 0} approved jobs waiting
-              </p>
-            </div>
-            <ArrowRight className="w-4 h-4 text-gray-600 group-hover:text-blue-400 transition-colors" />
-          </div>
+        <Link href="/applications?status=PENDING">
+          <Card className="hover:bg-accent transition-colors cursor-pointer group">
+            <CardContent className="p-5 flex items-center justify-between">
+              <div>
+                <p className="text-sm font-bold group-hover:text-accent-foreground transition-colors">Prepare Applications</p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  {stats?.approved || 0} approved roles ready for resume tailoring and cover letter generation.
+                </p>
+              </div>
+              <Button variant="outline" size="icon" className="shrink-0">
+                <ArrowRight className="w-4 h-4" />
+              </Button>
+            </CardContent>
+          </Card>
         </Link>
       </div>
     </div>

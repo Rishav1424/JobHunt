@@ -4,6 +4,9 @@ import { RemoteOKScraper } from './remoteok';
 import { WellfoundScraper } from './wellfound';
 import { InstaHyreScraper } from './instahyre';
 import { LinkedInScraper } from './linkedin';
+import { NaukriScraper } from './naukri';
+import { ATSScraper } from './ats';
+import { YCombinatorScraper } from './ycombinator';
 import { prisma } from '../../core/prisma';
 import { logger } from '../../core/logger';
 import { canRun, recordSuccess, recordFailure } from '../../core/scraperHealth';
@@ -16,6 +19,9 @@ export const ALL_SCRAPERS: Record<string, JobSource> = {
   wellfound: new WellfoundScraper(),
   instahyre: new InstaHyreScraper(),
   linkedin: new LinkedInScraper(),
+  naukri: new NaukriScraper(),
+  ats: new ATSScraper(),
+  ycombinator: new YCombinatorScraper(),
 };
 
 // ─── Pre-filter: Title Blocklist ──────────────────────────────────────────────
@@ -77,7 +83,7 @@ export async function runAllScrapers(): Promise<{ total: number; newJobs: number
   const scraperResults: Record<string, string> = {};
 
   for (const [name, scraper] of Object.entries(ALL_SCRAPERS)) {
-    if (!enabledSources[name]) {
+    if (enabledSources && enabledSources[name] === false) {
       logger.info(`Scraper "${name}" is disabled, skipping`);
       scraperResults[name] = 'DISABLED';
       continue;

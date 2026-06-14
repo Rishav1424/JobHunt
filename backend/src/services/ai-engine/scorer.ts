@@ -2,6 +2,7 @@ import { flashModel, generateEmbedding, parseGeminiJSON, cosineSimilarity, callW
 import { prisma } from '../../core/prisma';
 import { logger } from '../../core/logger';
 import { getFeedbackCalibration } from './feedback';
+import { getCompanyStatus } from './companyDirectory';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -27,6 +28,9 @@ export interface FitAnalysis {
   recommendation: string;          // one actionable sentence
   isTargetCompany?: boolean;       // true if company is on dream list
   prescreenPassed: boolean;        // false = skipped Gemini (pre-screened out)
+  redFlags?: string[];            // Warning signs/culture red flags
+  domainRelevance?: string;        // Reasoning about domain relevance
+  adjustedWeights?: Record<string, number>; // Dynamic weight distribution
 }
 
 // ─── Candidate Profile (baked in, from PersonalData.md) ──────────────────────
@@ -103,6 +107,45 @@ function isDreamCompany(company: string): boolean {
   return DREAM_COMPANIES.some((d) => lower.includes(d));
 }
 
+/**
+ * Fast, regex-based deterministic knockout check.
+ * Skips the LLM if the job requires >= 3 YOE or pays low salary.
+ */
+function checkKnockout(title: string, description: string): { knockedOut: boolean; reason: string } | null {
+  const combinedText = `${title}\n\n${description}`.toLowerCase();
+
+  // 1. Seniority Knockout
+  const isSeniorTitle = /\b(senior|sr\b|lead|principal|architect|manager|staff)\b/i.test(title) && !/\b(intern|co-op|fresher|graduate)\b/i.test(title);
+  const yoeMatch = combinedText.match(/\b([3-9]|\d{2})\+?\s*(?:yoe|years|yrs|years\s+of\s+experience)\b/i);
+  
+  if (isSeniorTitle) {
+    return { knockedOut: true, reason: `Senior title detected: "${title}"` };
+  }
+  if (yoeMatch) {
+    const years = parseInt(yoeMatch[1]);
+    if (years >= 3) {
+      return { knockedOut: true, reason: `Experience requirement is too high: ${years}+ YOE (matched: "${yoeMatch[0]}")` };
+    }
+  }
+
+  // 2. Low Compensation Knockout (3-14 LPA / lacs / lakhs)
+  const lowPayMatch = combinedText.match(/\b([3-9]|1[0-4])\s*(?:lpa|lacs|lakhs?|lakh)\b/i);
+  if (lowPayMatch) {
+    // Exclude if it is part of a higher range e.g. "12-18 LPA" or "14-20 LPA"
+    const rangeMatch = combinedText.match(/\b(\d+)\s*(?:-|to)\s*(\d+)\s*(?:lpa|lacs|lakhs?)\b/i);
+    if (rangeMatch) {
+      const maxPay = parseInt(rangeMatch[2]);
+      if (maxPay < 15) {
+        return { knockedOut: true, reason: `Salary range max is below threshold: ${rangeMatch[0]}` };
+      }
+    } else {
+      return { knockedOut: true, reason: `Salary matches low compensation heuristic: ${lowPayMatch[0]}` };
+    }
+  }
+
+  return null;
+}
+
 // ─── Main Scoring Function ────────────────────────────────────────────────────
 
 export async function scoreJob(jobId: string): Promise<FitAnalysis | null> {
@@ -136,6 +179,31 @@ export async function scoreJob(jobId: string): Promise<FitAnalysis | null> {
       return zeroAnalysis;
     }
 
+    // ── Deterministic Heuristic Knockouts ────────────────────────────────
+    const knockout = checkKnockout(job.title, job.description);
+    if (knockout) {
+      logger.info(`Deterministic Knockout triggered for "${job.title}" @ ${job.company}: ${knockout.reason}`);
+      const zeroAnalysis: FitAnalysis = {
+        score: 0,
+        dimensions: { techStack: 0, seniorityFit: 0, domainFit: 0, compensationFit: 0, companyTier: 0 },
+        verdict: 'Weak Match',
+        strengths: [],
+        gaps: [knockout.reason],
+        reasons: [`Knocked out: ${knockout.reason}`],
+        whyApply: 'Not applicable — requirement mismatch',
+        whySkip: knockout.reason,
+        keywordsMatched: [],
+        recommendation: 'Skip — requirement mismatch',
+        isTargetCompany,
+        prescreenPassed: false,
+      };
+      await prisma.job.update({
+        where: { id: jobId },
+        data: { fitScore: 0, fitAnalysis: zeroAnalysis as unknown as import('@prisma/client').Prisma.InputJsonValue, status: 'SCORED', scoredAt: new Date() },
+      });
+      return zeroAnalysis;
+    }
+
     // ── Step 1: Embedding similarity (fast, no Gemini quota) ─────────────
     let embeddingScore = 50; // default if no profile embedding
     let jobEmbedding = job.embedding;
@@ -155,8 +223,20 @@ export async function scoreJob(jobId: string): Promise<FitAnalysis | null> {
     // ── Step 2: Feedback calibration (learns from your approvals/skips) ──
     const calibration = await getFeedbackCalibration();
 
-    // ── Step 3: Gemini multi-dimensional analysis ─────────────────────────
-    const prompt = buildScoringPrompt(job.title, job.company, job.description, job.salaryRaw, embeddingScore, calibration, isTargetCompany);
+    // ── Step 3: Company Status & Data Enrichment ─────────────────────────
+    const companyStatus = getCompanyStatus(job.company);
+
+    // ── Step 4: Gemini multi-dimensional analysis ─────────────────────────
+    const prompt = buildScoringPrompt(
+      job.title,
+      job.company,
+      job.description,
+      job.salaryRaw,
+      embeddingScore,
+      calibration,
+      isTargetCompany,
+      companyStatus
+    );
 
     const result = await callWithRetry(
       () => flashModel.generateContent(prompt),
@@ -167,12 +247,42 @@ export async function scoreJob(jobId: string): Promise<FitAnalysis | null> {
     let analysis: FitAnalysis;
     try {
       const raw = parseGeminiJSON<Omit<FitAnalysis, 'prescreenPassed' | 'isTargetCompany'>>(result.response.text());
+      
+      // Calculate composite score programmatically to enforce accuracy
+      const weights = raw.adjustedWeights || {
+        techStack: 0.15,
+        seniorityFit: 0.30,
+        domainFit: 0.10,
+        compensationFit: 0.25,
+        companyTier: 0.20,
+      };
+
+      const sum = (weights.techStack || 0) + (weights.seniorityFit || 0) + (weights.domainFit || 0) + (weights.compensationFit || 0) + (weights.companyTier || 0);
+      const scale = sum > 0 ? 1 / sum : 1;
+
+      let finalScore = Math.round(
+        ((raw.dimensions.techStack * (weights.techStack || 0.15) +
+          raw.dimensions.seniorityFit * (weights.seniorityFit || 0.30) +
+          raw.dimensions.domainFit * (weights.domainFit || 0.10) +
+          raw.dimensions.compensationFit * (weights.compensationFit || 0.25) +
+          raw.dimensions.companyTier * (weights.companyTier || 0.20)) * scale)
+      );
+
+      // If red flags exist, cap final score at 60
+      if (raw.redFlags && raw.redFlags.length > 0) {
+        finalScore = Math.min(60, finalScore);
+      }
+
+      // If it's a dream company, give a floor boost of +10
+      if (isTargetCompany) {
+        finalScore = Math.min(100, finalScore + 10);
+      }
+
       analysis = {
         ...raw,
         prescreenPassed: true,
         isTargetCompany,
-        // If it's a dream company, give a floor boost of +10
-        score: isTargetCompany ? Math.min(100, Math.round(raw.score) + 10) : Math.min(100, Math.round(raw.score)),
+        score: Math.max(0, Math.min(100, finalScore)),
       };
     } catch (parseErr) {
       logger.error(`Failed to parse scorer response for ${jobId}`, { parseErr });
@@ -193,10 +303,7 @@ export async function scoreJob(jobId: string): Promise<FitAnalysis | null> {
       };
     }
 
-    // Clamp to 0-100
-    analysis.score = Math.max(0, Math.min(100, analysis.score));
-
-    // ── Step 4: Persist ───────────────────────────────────────────────────
+    // ── Step 5: Persist ───────────────────────────────────────────────────
     await prisma.job.update({
       where: { id: jobId },
       data: {
@@ -228,8 +335,18 @@ function buildScoringPrompt(
   salaryRaw: string | null | undefined,
   embeddingScore: number,
   calibration: string,
-  isTargetCompany: boolean
+  isTargetCompany: boolean,
+  companyStatus: string
 ): string {
+  let companyStatusFlag = '';
+  if (companyStatus === 'MNC') {
+    companyStatusFlag = '\n- **Company Status:** Known Global MNC (Prestige Tier-1 Company)';
+  } else if (companyStatus === 'TIER_1_STARTUP') {
+    companyStatusFlag = '\n- **Company Status:** Known Tier-1 Indian Startup (High Growth, Well Funded)';
+  } else if (companyStatus === 'SERVICE') {
+    companyStatusFlag = '\n- **Company Status:** Service-Based Company (Infosys, TCS, Wipro, etc. - automatic low score)';
+  }
+
   return `You are an expert technical recruiter scoring a candidate's fit for a job. Be precise and honest.
 
 ${CANDIDATE_PROFILE}
@@ -238,7 +355,7 @@ ${CANDIDATE_PROFILE}
 
 ## Job Being Scored
 - **Title:** ${jobTitle}
-- **Company:** ${company}${isTargetCompany ? ' ⭐ (DREAM COMPANY — candidate is highly interested)' : ''}
+- **Company:** ${company}${isTargetCompany ? ' ⭐ (DREAM COMPANY — candidate is highly interested)' : ''}${companyStatusFlag}
 - **Listed Salary:** ${salaryRaw || 'Not listed'}
 - **Embedding Similarity (semantic):** ${embeddingScore}/100
 
@@ -253,52 +370,69 @@ ${calibration}
 
 ## SCORING INSTRUCTIONS
 
-Score the candidate across 5 dimensions. Use CHAIN OF THOUGHT: reason through each dimension before scoring it.
+Before determining the scores, evaluate the domain relevance and the tech stack requirements. Use a Chain of Thought to complete a pre-scoring step:
 
-### Dimension 1: Tech Stack Match (35% weight)
-Think: What languages/frameworks does the JD require? Which does Rishav have at Strong/Comfortable/Familiar level?
-- Strong: Java, C/C++, Spring Boot, WebSockets (STOMP), Socket.IO, PostgreSQL
-- Comfortable: Node.js, React, Redis, Python, Django, Docker
-- Score 90-100: JD tech is mostly Java/Spring Boot/Node/WebSocket/Redis (his exact stack)
-- Score 70-89: JD is general backend/full-stack with overlapping tech
-- Score 40-69: Partial overlap, but missing key required tech
-- Score <40: JD requires tech he doesn't have (Python ML, iOS, Android, Go, Rust, etc.)
+1. **Pre-scoring Reasoning & Weights Adjustment**:
+   - Provide a "domainRelevance" assessment (e.g. "High - aligns with real-time distributed systems").
+   - You can dynamically adjust the weights using "adjustedWeights".
+   - The default weights are:
+     * **Seniority Fit**: 30% (0.30)
+     * **Compensation Fit**: 25% (0.25)
+     * **Company Tier**: 20% (0.20)
+     * **Tech Stack Match**: 15% (0.15)
+     * **Domain Fit**: 10% (0.10)
+   - If a role requires a technology (like Go or Rust) that Rishav is only familiar with, but is building low-latency communication networks or distributed systems where his protocol-level/real-time experience is highly valuable, adjust "adjustedWeights" to put LESS weight on "techStack" and MORE weight on "experienceFit" and "domainFit".
 
-### Dimension 2: Seniority Fit (25% weight)
-Think: Does the JD require experience he has as a fresh grad?
-- Score 90-100: Explicitly "fresher" / "0-1 YOE" / "new grad" / "intern/PPO"
-- Score 70-89: "1-2 YOE" — he's borderline but Samsung internship is real production work
-- Score 40-69: "2-4 YOE required" — possible stretch, Samsung helps
-- Score <40: "5+ YOE", "senior", "lead" required
+2. **Dimension 1: Tech Stack Match (15% weight by default)**
+   - Think: What languages/frameworks does the JD require? Which does Rishav have at Strong/Comfortable/Familiar level?
+     * Strong: Java, C/C++, Spring Boot, WebSockets (STOMP), Socket.IO, PostgreSQL
+     * Comfortable: Node.js, React, Redis, Python, Django, Docker
+   - Score 90-100: JD tech is mostly Java/Spring Boot/Node/WebSocket/Redis (his exact stack).
+   - Score 70-89: JD is general backend/full-stack with overlapping tech (e.g. JS/TS, Python).
+   - Score <40: JD requires tech he doesn't have (Python ML, iOS, Android, etc.).
 
-### Dimension 3: Domain Fit (20% weight)
-Think: Is this a Backend/SDE/Full-Stack role, or something else?
-- Score 90-100: Core Backend / SDE / Distributed Systems / Full-Stack
-- Score 60-89: Adjacent (DevOps with strong coding component, Platform Engineering)
-- Score <40: Data Science, ML, Embedded, Mobile, QA, Frontend-only
+3. **Dimension 2: Seniority Fit (30% weight by default)**
+   - **CRITICAL EXPERIENCE FIT CALIBRATION**: Rishav is graduating in June 2026 and currently holds an intern role handling high-impact distributed systems (PTP, WebSockets).
+   - Treat "0-1 YOE" or "Fresher/New Grad" or "Intern/PPO" as a **100 score**.
+   - Roles requiring "1-2 YOE" can receive a score of **80-95** (as his Samsung internship is real production work).
+   - Roles requiring **2+ years of full-time experience** must receive a score **below 40**.
 
-### Dimension 4: Compensation Fit (10% weight)
-Think: Does salary match Rishav's ₹15 LPA minimum?
-- Score 90-100: Listed salary clearly ≥ ₹15 LPA or top-tier company (salary irrelevant)
-- Score 60-89: Not listed but company tier suggests ≥ ₹15 LPA
-- Score 40-59: Listed salary 10-15 LPA range
-- Score <40: Listed salary < ₹10 LPA or clearly underpaid (stipend roles)
+4. **Dimension 3: Domain Fit (10% weight by default)**
+   - Think: Is this a Backend/SDE/Full-Stack role, or something else?
+   - Score 90-100: Core Backend / SDE / Distributed Systems / Full-Stack.
+   - Score <40: Data Science, ML, Embedded, Mobile, QA, Frontend-only.
 
-### Dimension 5: Company Tier (10% weight)
-Think: Is this an engineering-first company or a body-shopper?
-- Score 90-100: FAANG, top Indian funded startup (Razorpay, CRED, Zepto, Meesho, Swiggy, Zomato, Groww)
-- Score 70-89: Mid-stage funded startup, good product company
-- Score 50-69: Small startup, unknown company
-- Score <30: Pure IT services, consulting, outsourcing
+5. **Dimension 4: Compensation Fit (25% weight by default)**
+   - Think: Does salary match Rishav's ₹15 LPA minimum?
+   - **SALARY INFERENCE CALIBRATION**:
+     * If the salary is hidden, analyze the company tier. Top MNCs and funded unicorns generally offer ₹15LPA+ for entry-level SDEs. In these cases, score this dimension **85-100**.
+     * Service-based companies typically offer ₹3-7 LPA. In these cases, score this dimension **below 40**.
+   - Score 90-100: Listed salary clearly ≥ ₹15 LPA.
+   - Score 40-59: Listed salary 10-14 LPA range.
+   - Score <40: Listed salary < ₹10 LPA.
 
-### Composite Score
-Weighted average: (techStack*0.35 + seniority*0.25 + domain*0.20 + compensation*0.10 + companyTier*0.10)
-IMPORTANT: Be calibrated — a score of 75+ means "apply immediately". Don't inflate scores for average matches.
+6. **Dimension 5: Company Tier (20% weight by default)**
+   - Think: Is this an engineering-first company or a body-shopper?
+   - Score 90-100: FAANG, top global MNCs, or top Indian funded startups (Razorpay, CRED, Zepto, Meesho, Swiggy, Zomato).
+   - Score 70-89: Mid-stage funded startup, good product company.
+   - Score <30: Pure IT services, consulting, outsourcing (TCS, Infosys, Wipro, Capgemini, Accenture, Cognizant, etc.).
+
+7. **Cultural Red Flags**:
+   - Scan the job description for warning signs ("redFlags") that contradict Rishav's goals (e.g. "fast-paced environment with tight deadlines" - code for burnout, "maintain legacy systems", or strict in-office mandates).
+   - If a red flag is found, list it. The score will be capped at 60.
 
 ---
 
 Respond with ONLY valid JSON (no markdown, no extra text):
 {
+  "domainRelevance": "<reasoning about how closely the domain matches Rishav's background>",
+  "adjustedWeights": {
+    "techStack": <float 0.0-1.0>,
+    "seniorityFit": <float 0.0-1.0>,
+    "domainFit": <float 0.0-1.0>,
+    "compensationFit": <float 0.0-1.0>,
+    "companyTier": <float 0.0-1.0>
+  },
   "score": <integer 0-100, weighted composite>,
   "dimensions": {
     "techStack": <integer 0-100>,
@@ -308,6 +442,7 @@ Respond with ONLY valid JSON (no markdown, no extra text):
     "companyTier": <integer 0-100>
   },
   "verdict": "<Strong Match|Good Match|Partial Match|Weak Match>",
+  "redFlags": ["<warning signs detected in JD>", ...],
   "strengths": ["<specific strength from Rishav's profile matching this JD>", ...],
   "gaps": ["<specific gap: what JD requires that Rishav lacks>", ...],
   "reasons": ["<detailed reasoning bullet>", "<another>", ...],
@@ -349,3 +484,4 @@ function buildProfileText(profile: { baseResumeLatex: string }): string {
     .replace(/\s+/g, ' ')
     .trim();
 }
+
