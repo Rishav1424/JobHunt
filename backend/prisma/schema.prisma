@@ -1,0 +1,203 @@
+// This is your Prisma schema file
+// Learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ────────────────────────────────────────────────────────────────────
+
+enum JobStatus {
+  NEW          // Just scraped, not yet scored
+  SCORING      // Gemini is scoring it
+  SCORED       // Has fit score, ready for your review
+  REVIEWING    // You're looking at it
+  APPROVED     // You approved it for application
+  APPLYING     // Playwright is running
+  APPLIED      // Successfully submitted
+  SKIPPED      // You passed on it
+  BLACKLISTED  // Blacklisted company / role
+}
+
+enum ApplicationStatus {
+  PENDING    // Approved but not applied yet
+  APPLIED    // Application submitted
+  INTERVIEW  // Interview scheduled
+  OFFER      // Offer received!
+  REJECTED   // Rejected
+  WITHDRAWN  // You withdrew
+}
+
+enum EmailEventType {
+  INTERVIEW_INVITE
+  REJECTION
+  FOLLOW_UP_NEEDED
+  OFFER
+  OTHER
+}
+
+enum SalaryType {
+  CONFIRMED   // Explicitly stated in listing
+  ESTIMATED   // Inferred by Gemini from company/role
+  UNKNOWN     // Could not determine
+}
+
+// ─── Models ───────────────────────────────────────────────────────────────────
+
+model Job {
+  id          String    @id @default(cuid())
+  
+  // Core fields
+  title       String
+  company     String
+  location    String?
+  isRemote    Boolean   @default(false)
+  description String    @db.Text
+  url         String    @unique
+  applyUrl    String?
+  
+  // Salary
+  salaryMin   Float?    // in LPA
+  salaryMax   Float?    // in LPA
+  salaryRaw   String?   // original text e.g. "₹20-30 LPA"
+  salaryType  SalaryType @default(UNKNOWN)
+  
+  // Source
+  source      String    // adzuna | remoteok | wellfound | instahyre | linkedin | direct
+  atsType     String?   // greenhouse | lever | workday | linkedin | direct
+  
+  // AI Analysis
+  fitScore    Float?    // 0-100
+  fitAnalysis Json?     // { score, reasons[], missing_skills[], strengths[], salaryEstimate }
+  embedding   Float[]   // Gemini text-embedding-004 (768-dim), stored as float array
+  
+  // Dedup hash
+  dedupeHash  String    @unique // SHA256(company + title + location)
+  
+  // Status & timestamps
+  status      JobStatus @default(NEW)
+  scrapedAt   DateTime  @default(now())
+  scoredAt    DateTime?
+  updatedAt   DateTime  @updatedAt
+  
+  // Relations
+  application Application?
+  
+  @@index([status])
+  @@index([fitScore])
+  @@index([source])
+  @@index([scrapedAt])
+  @@index([company])
+}
+
+model Application {
+  id          String   @id @default(cuid())
+  jobId       String   @unique
+  job         Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  
+  // Status
+  status      ApplicationStatus @default(PENDING)
+  
+  // AI-generated content (shown to you before use)
+  tailoredResumeLatex    String?  @db.Text
+  tailoredResumePdfPath  String?  // path in storage/
+  coverLetter            String?  @db.Text
+  changesSummary         Json?    // what the AI changed in the resume
+  
+  // Your inputs
+  customNotes      String?  @db.Text  // your notes before applying
+  formAnswers      Json?    // stored Q&A for custom questions
+  salaryExpectation String? // what you entered
+  
+  // Apply tracking
+  appliedAt                    DateTime?
+  confirmationScreenshotPath   String?
+  
+  // Timestamps
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  // Relations
+  emailEvents EmailEvent[]
+  
+  @@index([status])
+  @@index([appliedAt])
+}
+
+model EmailEvent {
+  id            String   @id @default(cuid())
+  applicationId String
+  application   Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  
+  type          EmailEventType
+  subject       String
+  fromEmail     String
+  fromName      String?
+  receivedAt    DateTime
+  rawText       String   @db.Text
+  summary       String?  // Gemini-generated 1-line summary
+  
+  createdAt     DateTime @default(now())
+  
+  @@index([applicationId])
+  @@index([receivedAt])
+}
+
+model UserProfile {
+  id               String   @id @default(cuid())
+  
+  // Personal info
+  name             String   @default("Rishav Sharma")
+  email            String   @default("sharmarishav676@gmail.com")
+  phone            String   @default("+91 7439497568")
+  location         String   @default("Kolkata, India")
+  linkedinUrl      String?  @default("https://linkedin.com/in/rishav1424")
+  githubUrl        String?  @default("https://github.com/rishav1424")
+  
+  // Resume
+  baseResumeLatex  String   @db.Text  // your .latex file contents
+  baseResumePath   String   @default("../BaseResume.latex")
+  
+  // Pre-computed profile embedding (from resume, cached)
+  profileEmbedding Float[]  // Gemini text-embedding-004
+  embeddingComputedAt DateTime?
+  
+  // Structured skills (auto-parsed from resume, editable)
+  skills           String[]
+  
+  updatedAt        DateTime @updatedAt
+}
+
+model Settings {
+  id                  String   @id @default(cuid())
+  
+  // Job filters
+  minSalaryLpa        Float    @default(15)
+  maxSalaryLpa        Float?
+  targetRoles         String[] @default(["Software Development Engineer", "Backend Engineer", "Full Stack Engineer", "SDE", "SWE"])
+  targetLocations     String[] @default(["India", "Remote"])
+  remoteOnly          Boolean  @default(false)
+  
+  // AI config
+  fitScoreThreshold   Float    @default(65)
+  
+  // Scheduling
+  scrapeIntervalHours Float    @default(6)
+  
+  // Source toggles (JSON object: { adzuna: true, remoteok: true, ... })
+  enabledSources      Json     @default("{\"adzuna\":true,\"remoteok\":true,\"wellfound\":true,\"instahyre\":true,\"linkedin\":true}")
+  
+  // Company filters
+  blacklistedCompanies String[] @default([])
+  targetCompanies      String[] @default(["Google", "Microsoft", "Amazon", "Meta", "Flipkart", "Zomato", "Razorpay", "CRED", "Zepto", "Meesho", "Stripe", "Figma", "Notion"])
+  
+  // Last scrape tracking
+  lastScrapedAt       DateTime?
+  
+  updatedAt           DateTime @updatedAt
+}

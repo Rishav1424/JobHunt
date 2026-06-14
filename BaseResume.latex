@@ -1,0 +1,126 @@
+\documentclass[10pt, a4paper]{article}
+
+% --- UNIVERSAL PREAMBLE BLOCK ---
+\usepackage[a4paper, top=1.1cm, bottom=1.1cm, left=1.1cm, right=1.1cm]{geometry}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{helvet}
+\renewcommand{\familydefault}{\sfdefault}
+
+\usepackage[english]{babel}
+
+\usepackage{enumitem}
+\usepackage{titlesec}
+\usepackage{xcolor}
+\usepackage{hyperref}
+
+% --- STYLING CONFIGURATION ---
+
+\definecolor{primary}{RGB}{0, 70, 180}
+\definecolor{textblack}{RGB}{30, 30, 30}
+
+\titleformat{\section}
+  {\large\bfseries\color{primary}\uppercase} % Format
+  {}                                         % Label
+  {0em}                                      % Separation
+  {}                                         % Before-code (Leave empty)
+  [\vspace{0pt}\titlerule \vspace{2pt}]      % After-code (Line goes here)
+\titlespacing*{\section}{0pt}{6pt}{4pt}
+
+\setlist[itemize]{
+    leftmargin=*,
+    label={\color{primary}\textbullet},
+    noitemsep,
+    topsep=0pt,
+    partopsep=0pt,
+}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=primary,
+    filecolor=primary,
+    urlcolor=primary,
+}
+\pagestyle{empty}
+% --- DOCUMENT START ---
+\begin{document}
+
+% --- HEADER ---
+\begin{center}
+    {\Huge \bfseries \color{primary} Rishav Sharma} \\ \vspace{5pt}
+    \small \color{textblack}
+    Kolkata, India $\cdot$ (+91) 7439497568 $\cdot$ \href{mailto:sharmarishav676@gmail.com}{sharmarishav676@gmail.com} \\
+    \href{https://linkedin.com/in/rishav1424}{linkedin.com/in/rishav1424} $\cdot$
+    \href{https://github.com/rishav1424}{github.com/rishav1424} $\cdot$
+\end{center}
+% --- SUMMARY ---
+\section*{Summary} 
+SDE Intern at \textbf{Samsung R\&D} (SRID) with hands-on experience in \textbf{distributed real-time systems, low-latency audio engineering, and fault-tolerant protocol design}. Skilled in building scalable backends using \textbf{Java, Spring Boot, and the MERN stack}; proficient in \textbf{computer fundamentals, system design, and DSA} with 500+ problems solved.
+
+% --- EXPERIENCE ---
+\section*{Experience}
+
+\noindent
+\textbf{Samsung R\&D Institute India (SRID)} \hfill Noida, India \\
+\textit{Software Development Engineering Intern} \hfill Jan 2026 -- Present
+\begin{itemize}
+    \item \textbf{Precision Sync:} Implemented \textbf{PTP (Precision Time Protocol)} to achieve sub-5\(\mu\)s clock synchronization across a multi-device audio mesh, enabling tight ensemble coordination at scale.
+    \item \textbf{Audio Optimization:} Integrated the \textbf{OPUS codec} for real-time audio streaming, reducing bandwidth consumption by \textbf{\(\sim\)40\%} while preserving high-fidelity audio quality.
+    \item \textbf{Network Resilience:} Engineered a \textbf{Forward Error Correction (FEC)} layer that sustained \textbf{zero-dropout audio playback} under simulated 15\% packet loss, eliminating perceptible lag across all test environments.
+\end{itemize}
+
+% --- EDUCATION ---
+\section*{Education}
+\noindent
+\textbf{National Institute of Technology, Durgapur} \hfill 08/2022 -- 06/2026 \\
+{Bachelor of Technology in Electrical Engineering} \hfill \textbf{CGPA: 7.5/10}
+
+% --- SKILLS ---
+\section*{Technical Skills}
+\begin{itemize}
+    \item \textbf{Languages:} Java (Strong), JavaScript (ES6+), Python, C++, SQL, HTML/CSS
+    \item \textbf{Core Concepts:} Data Structures \& Algorithms, OOP, DBMS, OS, Computer Networks, System Design
+    \item \textbf{Web Technologies:} React.js, Node.js, Express.js, Redux, Django, Tailwind CSS, REST APIs, WebSockets, Socket.IO
+    \item \textbf{Tools \& Platforms:} Docker, Git/GitHub, AWS (Basic), PostgreSQL, MongoDB, Redis, Linux, Postman
+\end{itemize}
+
+% --- PROJECTS ---
+\section*{Projects}
+
+\noindent
+\textbf{Distributed Chess Platform} $|$ \textit{Spring Boot, Redis, WebSocket, Docker} \hfill \href{https://chessclient.onrender.com/dashboard}{Live} $|$ \href{https://github.com/Rishav1424/chess.com}{Code}
+\begin{itemize}
+    \item Architected a \textbf{microservices-based} chess backend using \textbf{Spring Boot}, delivering real-time move synchronization via the \textbf{STOMP over WebSocket} protocol with sub-100ms round-trip latency.
+    \item Designed a \textbf{distributed session layer} using \textbf{Redis Pub/Sub} to enable horizontal scaling across stateless server nodes, ensuring session persistence with sub-10ms failover.
+    \item Containerized the full application stack using \textbf{Docker} and \textbf{Docker Compose}, enabling one-command local setup and environment-consistent production deployments.
+    \item Implemented server-side \textbf{clock validation} and move-sequencing to prevent client-side manipulation, ensuring tournament-grade game integrity.
+\end{itemize}
+\vspace{2pt}
+\noindent
+\textbf{CampusCord (Real-Time Chat Application)} $|$ \textit{React, Node.js, Socket.IO, PostgreSQL, Prisma} \hfill \href{https://campuscord.vercel.app/}{Live} $|$ \href{https://github.com/Rishav1424/CampusCord-Backend}{Code}
+\begin{itemize}
+    \item Architected a low-latency messaging platform using \textbf{Socket.IO}, achieving \textbf{sub-50ms message delivery} with instant bidirectional communication for \textbf{500+ concurrent users}.
+    \item Engineered a scalable \textbf{multi-server architecture} with \textbf{Role-Based Access Control (RBAC)} and \textbf{JWT} authentication, supporting granular permission management across server hierarchies.
+    \item Reduced complex join query response times by \textbf{60\%} by designing optimized \textbf{PostgreSQL} schemas with strategic indexing via \textbf{Prisma ORM}.
+    \item Implemented institutional email validation to enforce secure, domain-restricted access for campus communities.
+\end{itemize}
+\vspace{2pt}
+\noindent
+\textbf{E-Summit Platform (High-Traffic Event Site)} $|$ \textit{Django, PostgreSQL} \hfill \href{https://github.com/Rishav1424/esummit-website}{Code}
+\begin{itemize}
+    \item Built the official full-stack platform for NIT Durgapur's E-Summit, sustaining \textbf{5,000+ concurrent users} with REST API response times consistently \textbf{under 100ms} under peak load.
+    \item Engineered a \textbf{QR Hunt} gamification engine with real-time leaderboard updates, serving hundreds of simultaneous participants without degradation.
+    \item Automated event registration and merchandise workflows, reducing manual operational overhead by \textbf{\(\sim\)70\%}; served mobile and web clients via decoupled REST APIs.
+\end{itemize}
+
+% --- ACHIEVEMENTS & LEADERSHIP ---
+\section*{Achievements \& Leadership}
+\begin{itemize}
+    \item Solved \textbf{500+ problems} on LeetCode \& GFG (250+ medium, 100+ hard); actively competing in weekly contests with a \textbf{contest rating of 1600+}.
+    \item Secured \textbf{Global Rank 843} among 15,000+ participants in CodeChef Starters 133 Div 2 (\textbf{Max Rating: 1530}).
+    \item Achieved an \textbf{All India Rank of 10,648} in \textbf{JEE Advanced 2022}, placing in the \textbf{Top 1\%} of over 1 million candidates.
+    \item \textbf{Web Development Head} at \textbf{EDC NIT Durgapur}: Led a \textbf{25+ member team}, driving technical architecture decisions for official club platforms and \textit{Eastern India's largest E-Summit}.
+\end{itemize}
+
+\end{document}

@@ -1,0 +1,167 @@
+services:
+  # ─── PostgreSQL ──────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: jobhunt-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: jobhunt
+      POSTGRES_PASSWORD: jobhunt_secret
+      POSTGRES_DB: jobhunt
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U jobhunt -d jobhunt" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── Redis ───────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: jobhunt-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── Backend API ─────────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: jobhunt-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: development
+      PORT: 4000
+      DATABASE_URL: postgresql://jobhunt:jobhunt_secret@postgres:5432/jobhunt
+      REDIS_URL: redis://redis:6379
+      FRONTEND_URL: http://localhost:3000
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      ADZUNA_APP_ID: ${ADZUNA_APP_ID:-}
+      ADZUNA_API_KEY: ${ADZUNA_API_KEY:-}
+      SERPER_API_KEY: ${SERPER_API_KEY:-}
+      JWT_SECRET: ${JWT_SECRET:-local-dev-secret-change-in-prod}
+      STORAGE_PATH: /app/storage
+    ports:
+      - "4000:4000"
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+      - ./BaseResume.latex:/app/BaseResume.latex:ro
+      - storage_data:/app/storage
+    command: npm run dev
+    develop:
+      watch:
+        - action: sync
+          path: ./backend
+          target: /app
+          ignore:
+            - node_modules/
+            - storage/
+        - action: rebuild
+          path: ./backend/package.json
+
+
+  # ─── BullMQ Worker ───────────────────────────────────────────────────────────
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: jobhunt-worker
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgresql://jobhunt:jobhunt_secret@postgres:5432/jobhunt
+      REDIS_URL: redis://redis:6379
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      ADZUNA_APP_ID: ${ADZUNA_APP_ID:-}
+      ADZUNA_API_KEY: ${ADZUNA_API_KEY:-}
+      SERPER_API_KEY: ${SERPER_API_KEY:-}
+      STORAGE_PATH: /app/storage
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+      - ./BaseResume.latex:/app/BaseResume.latex:ro
+      - storage_data:/app/storage
+    command: npm run dev:worker
+    develop:
+      watch:
+        - action: sync
+          path: ./backend
+          target: /app
+          ignore:
+            - node_modules/
+            - storage/
+        - action: rebuild
+          path: ./backend/package.json
+
+
+  # ─── Bull Board (Queue Monitor UI) ───────────────────────────────────────────
+  bullboard:
+    image: deadly0/bull-board
+    container_name: jobhunt-bullboard
+    restart: unless-stopped
+    depends_on:
+      - redis
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    ports:
+      - "3001:3000"
+
+  # ─── Frontend App ────────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: jobhunt-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      NODE_ENV: development
+      PORT: 3000
+      NEXT_PUBLIC_API_URL: http://localhost:4000/api
+      BACKEND_INTERNAL_URL: http://backend:4000
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    command: npm run dev
+    develop:
+      watch:
+        - action: sync
+          path: ./frontend
+          target: /app
+          ignore:
+            - node_modules/
+            - .next/
+        - action: rebuild
+          path: ./frontend/package.json
+
+
+volumes:
+  postgres_data:
+  redis_data:
+  storage_data:
