@@ -1,0 +1,36 @@
+{
+  "manifest_version": 3,
+  "name": "JobHunt Copilot",
+  "version": "1.0.0",
+  "description": "Stateful autofill assistant and PDF resume tailor for JobHunt.",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage",
+    "downloads",
+    "sidePanel"
+  ],
+  "host_permissions": [
+    "http://localhost:4000/*"
+  ],
+  "background": {
+    "service_worker": "src/background.ts",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "js": ["src/content.ts"],
+      "matches": [
+        "https://jobs.lever.co/*",
+        "https://boards.greenhouse.io/*"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "side_panel": {
+    "default_path": "index.html"
+  },
+  "action": {
+    "default_title": "Open JobHunt Copilot"
+  }
+}

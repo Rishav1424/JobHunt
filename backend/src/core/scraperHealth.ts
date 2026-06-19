@@ -118,7 +118,7 @@ export async function recordFailure(name: string, reason: string): Promise<void>
  * Get health status for all scrapers (for the health API).
  */
 export async function getAllScraperHealth(): Promise<Record<string, ScraperHealth>> {
-  const scraperNames = ['adzuna', 'remoteok', 'wellfound', 'instahyre', 'linkedin'];
+  const scraperNames = ['adzuna', 'remoteok', 'wellfound', 'instahyre', 'linkedin', 'naukri', 'ats', 'ycombinator'];
   const result: Record<string, ScraperHealth> = {};
 
   for (const name of scraperNames) {

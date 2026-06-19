@@ -2,6 +2,7 @@ import axios from 'axios';
 import { JobSource, JobListing, ScraperQuery } from './base';
 import { config } from '../../core/config';
 import { logger } from '../../core/logger';
+import { fetchJobDetails } from './detailFetcher';
 
 interface AdzunaJob {
   id: string;
@@ -58,12 +59,24 @@ export class AdzunaScraper extends JobSource {
           const salaryMin = job.salary_min ? job.salary_min / 100000 : undefined;
           const salaryMax = job.salary_max ? job.salary_max / 100000 : undefined;
 
+          let fullDescription = job.description;
+          if (!fullDescription || fullDescription.length < 400) {
+            try {
+              const details = await fetchJobDetails(job.redirect_url);
+              if (details && details.description && details.description.length > fullDescription.length) {
+                fullDescription = details.description;
+              }
+            } catch (err) {
+              logger.debug(`Adzuna: Failed to fetch detail description for ${job.redirect_url}`);
+            }
+          }
+
           listings.push({
             title: job.title,
             company: job.company.display_name,
             location,
             isRemote,
-            description: job.description,
+            description: fullDescription || job.description,
             url: job.redirect_url,
             applyUrl: job.redirect_url,
             salaryMin,

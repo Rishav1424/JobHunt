@@ -2,6 +2,7 @@ import { chromium, Browser, Page } from 'playwright';
 import { JobSource, JobListing, ScraperQuery } from './base';
 import { logger } from '../../core/logger';
 import { config } from '../../core/config';
+import { fetchJobDetails } from './detailFetcher';
 
 /**
  * InstaHyre scraper — India-first platform with CTC filters.
@@ -82,18 +83,32 @@ export class InstaHyreScraper extends JobSource {
             const { location, isRemote } = this.normalizeLocation(job.location);
             const { min: salaryMin, max: salaryMax } = this.parseSalaryIndia(job.salary);
 
+            const targetUrl = job.url.startsWith('http') ? job.url : `https://www.instahyre.com${job.url}`;
+            let fullDescription = job.description;
+
+            if (!fullDescription || fullDescription.length < 400) {
+              try {
+                const details = await fetchJobDetails(targetUrl);
+                if (details && details.description && details.description.length > fullDescription.length) {
+                  fullDescription = details.description;
+                }
+              } catch (err) {
+                logger.debug(`InstaHyre: Failed to fetch detail description for ${targetUrl}`);
+              }
+            }
+
             listings.push({
               title: job.title,
               company: job.company,
               location,
               isRemote,
-              description: job.description || `${job.title} at ${job.company}`,
-              url: job.url.startsWith('http') ? job.url : `https://www.instahyre.com${job.url}`,
+              description: fullDescription || `${job.title} at ${job.company}`,
+              url: targetUrl,
               salaryMin,
               salaryMax,
               salaryRaw: job.salary || undefined,
               source: this.name,
-              atsType: 'direct',
+              atsType: this.detectATS(targetUrl),
             });
           }
 

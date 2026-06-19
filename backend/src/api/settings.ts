@@ -35,6 +35,12 @@ const updateSettingsSchema = z.object({
   enabledSources: z.record(z.boolean()).optional(),
   blacklistedCompanies: z.array(z.string()).optional(),
   targetCompanies: z.array(z.string()).optional(),
+  mncCompanies: z.array(z.string()).optional(),
+  tier1Startups: z.array(z.string()).optional(),
+  serviceCompanies: z.array(z.string()).optional(),
+  dimensionWeights: z.record(z.number()).optional(),
+  minYoeCutoff: z.number().int().min(0).max(30).optional(),
+  minSalaryCutoff: z.number().min(0).max(200).optional(),
 });
 
 settingsRouter.patch('/', async (req: Request, res: Response) => {
@@ -53,6 +59,9 @@ settingsRouter.patch('/', async (req: Request, res: Response) => {
 
     res.json(updated);
   } catch (error) {
+    if (error instanceof z.ZodError) {
+      return res.status(400).json({ error: 'Validation failed', details: error.errors });
+    }
     logger.error('PATCH /api/settings error', { error });
     res.status(500).json({ error: 'Failed to update settings' });
   }
@@ -64,10 +73,16 @@ settingsRouter.get('/profile', async (_req: Request, res: Response) => {
     let profile = await prisma.userProfile.findFirst();
     if (!profile) {
       // Initialize from base resume file
-      const resumePath = path.resolve(process.env.STORAGE_PATH || './storage', '../BaseResume.latex');
+      const candidatePaths = [
+        '/app/BaseResume.latex',
+        path.resolve(process.cwd(), '../BaseResume.latex'),
+        path.resolve(__dirname, '../../../BaseResume.latex'),
+        path.resolve(__dirname, '../../../../BaseResume.latex'),
+      ];
+      const resumePath = candidatePaths.find(fs.existsSync) || '';
       let baseResumeLatex = '';
       try {
-        baseResumeLatex = fs.readFileSync(resumePath, 'utf-8');
+        baseResumeLatex = resumePath ? fs.readFileSync(resumePath, 'utf-8') : '';
       } catch {
         baseResumeLatex = '% Base resume not found. Please update.';
       }
@@ -132,6 +147,9 @@ settingsRouter.patch('/profile', async (req: Request, res: Response) => {
     const { profileEmbedding, ...profileData } = updated;
     res.json(profileData);
   } catch (error) {
+    if (error instanceof z.ZodError) {
+      return res.status(400).json({ error: 'Validation failed', details: error.errors });
+    }
     logger.error('PATCH /api/settings/profile error', { error });
     res.status(500).json({ error: 'Failed to update profile' });
   }

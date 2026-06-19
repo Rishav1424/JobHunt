@@ -196,8 +196,50 @@ model Settings {
   blacklistedCompanies String[] @default([])
   targetCompanies      String[] @default(["Google", "Microsoft", "Amazon", "Meta", "Flipkart", "Zomato", "Razorpay", "CRED", "Zepto", "Meesho", "Stripe", "Figma", "Notion"])
   
+  // Consolidated company tier directories in DB
+  mncCompanies         String[] @default([])
+  tier1Startups        String[] @default([])
+  serviceCompanies     String[] @default([])
+
+  // Dynamic dimension weights (stored as JSON)
+  dimensionWeights     Json?
+
+  // Knockout Cutoffs
+  minYoeCutoff        Int      @default(3)
+  minSalaryCutoff     Float    @default(15)
+
   // Last scrape tracking
   lastScrapedAt       DateTime?
   
   updatedAt           DateTime @updatedAt
 }
+
+model CompanyTier {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  tier      String   // MNC | TIER_1_STARTUP | SERVICE | UNKNOWN
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model KnowledgeChunk {
+  id          String   @id @default(cuid())
+  category    String   // "project" | "experience" | "technical_strength" | "education" | "other"
+  title       String?  // e.g. "Distributed Chess Platform"
+  content     String   @db.Text
+  embedding   Float[]  // 768-dimensional Gemini embedding
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([category])
+}
+
+model AnswerBank {
+  id         String   @id @default(cuid())
+  question   String   @unique
+  answer     String   @db.Text
+  embedding  Float[]  // 768-dimensional Gemini embedding of the question
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
+

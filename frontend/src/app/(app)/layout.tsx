@@ -10,7 +10,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       <div className="flex h-screen w-full overflow-hidden">
         <AppSidebar />
         <SidebarInset className="flex flex-col flex-1 overflow-hidden">
-          <header className="flex h-14 shrink-0 items-center gap-3 border-b px-4 md:px-6">
+          <header className="flex shrink-0 items-center gap-3 border-b px-4 md:px-6">
             <SidebarTrigger />
             <Separator orientation="vertical" />
             <span className="text-xs font-semibold text-muted-foreground tracking-wider uppercase">JobHunt AI</span>

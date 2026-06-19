@@ -6,7 +6,7 @@ import { Prisma } from '@prisma/client';
 async function requeue() {
   logger.info('🚀 Resetting and requeuing scored jobs for scoring...');
 
-  // Find all jobs that are currently SCORED (meaning they were scored previously with score 0 or fallback)
+  // Find all jobs that are currently SCORED (meaning they were scored previously)
   const jobsToRequeue = await prisma.job.findMany({
     where: {
       status: 'SCORED',

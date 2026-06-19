@@ -91,9 +91,23 @@ export interface FitAnalysis {
   strengths: string[];
   gaps: string[];
   reasons: string[];
+  whyApply: string;
+  whySkip: string;
   salaryEstimate?: string;
   keywordsMatched: string[];
   recommendation: string;
+  isTargetCompany?: boolean;
+  prescreenPassed?: boolean;
+  redFlags?: string[];
+  domainRelevance?: string;
+  dimensions?: {
+    techStack: number;
+    seniorityFit: number;
+    domainFit: number;
+    compensationFit: number;
+    companyTier: number;
+  };
+  adjustedWeights?: Record<string, number>;
 }
 
 export interface Application {

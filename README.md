@@ -1,101 +1,226 @@
-# JobHunt — Automated AI Job Hunting Platform
+# 🚀 JobHunt — Automated AI Job Hunting Platform
 
-> Personal job hunting automation for **Rishav Sharma** (NIT Durgapur '26)  
-> Stack: Node.js + TypeScript · Gemini AI · Playwright · PostgreSQL · Redis · Next.js
-
----
-
-## 🚀 Quick Start (5 steps)
-
-### 1. Copy and fill your environment file
-```bash
-copy .env.example .env
-```
-Edit `.env` and add at minimum:
-- `GEMINI_API_KEY` — from [Google AI Studio](https://aistudio.google.com/app/apikey) (free)
-- `ADZUNA_APP_ID` + `ADZUNA_API_KEY` — from [developer.adzuna.com](https://developer.adzuna.com) (free)
-
-### 2. Start infrastructure (PostgreSQL + Redis)
-```bash
-docker-compose up postgres redis -d
-```
-
-### 3. Initialize database
-```bash
-cd backend
-npm run db:push
-npm run db:seed
-```
-
-### 4. Start backend (API + Worker in separate terminals)
-```bash
-# Terminal 1 — API server
-cd backend
-npm run dev
-
-# Terminal 2 — BullMQ worker
-cd backend
-npm run dev:worker
-```
-
-### 5. Start frontend
-```bash
-cd frontend
-npm run dev
-```
-
-**Dashboard**: http://localhost:3000  
-**API**: http://localhost:4000  
-**Queue Monitor**: http://localhost:3001 (Bull Board)
+> **Human-in-the-Loop Job Search Automation Platform**  
+> Streamline your job hunt with AI-powered fit scoring, automated LinkedIn/Adzuna scraping, dynamic LaTeX resume tailoring, and a Chrome extension copilot for ATS forms.  
+> **Stack:** Node.js + TypeScript · Gemini AI · Playwright · PostgreSQL + Prisma · Redis + BullMQ · Next.js 16 (React 19) · Tailwind CSS v4
 
 ---
 
-## 🏗️ Architecture
+## 🏗️ System Architecture & Workflow
+
+The platform follows a **Human-in-the-Loop (HITL)** architecture designed to process intensive background operations (scraping, AI analysis) asynchronously while maintaining a real-time, dashboard-driven admin panel.
 
 ```
-frontend/   → Next.js 14 dashboard (review mode UI)
-backend/    → Express API + Socket.IO + BullMQ workers
-  ├── scrapers/    → Adzuna, RemoteOK, Wellfound, InstaHyre, LinkedIn
-  ├── ai-engine/   → Gemini Flash (scoring) + Pro (tailoring)
-  └── automation/  → Playwright apply engine (Phase 4)
+                   ┌───────────────────────────────────────────────┐
+                   │               FRONTEND DASHBOARD              │
+                   │         (Next.js 16 + Tailwind CSS v4)        │
+                   │ - Job Queue & Stats  - Settings Config  - Monaco  │
+                   └───────────────┬───────────────────────▲───────┘
+                                   │ REST (Axios)          │ WebSockets (Socket.io)
+                                   ▼                       │
+                   ┌───────────────────────────────────────┴───────┐
+                   │             BACKEND API (Express)             │
+                   │ - Jobs API   - Settings API   - Applications  │
+                   └───────────────┬───────────────────────┬───────┘
+                                   │ Enqueues Tasks        │ Queries / Persists
+                                   ▼                       ▼
+                   ┌──────────────────────────────┐┌───────────────┴───────┐
+                   │    REDIS (BullMQ Queues)     ││  DATABASE (Postgres)  │
+                   │ - job-scraping  - job-scoring ││ - Prisma Client ORM   │
+                   └───────────────┬──────────────┘└───────▲───────────────┘
+                                   │ worker processes      │ reads / writes
+                                   ▼                       │
+                   ┌───────────────────────────────────────┴───────┐
+                   │            BULLMQ BACKGROUND WORKERS          │
+                   │ - Playwright Headless Scraping & Details      │
+                   │ - Gemini AI Engine (Dimensional Fit scoring) │
+                   └───────────────────────┬───────────────────────┘
+                                           │
+                                           ▼ (Optional Copilot link)
+                   ┌───────────────────────────────────────────────┐
+                   │          CHROME COPILOT EXTENSION             │
+                   │            (Vite + React + CRXJS)             │
+                   │ - DOM Form Extraction - Autofill Form Inject  │
+                   └───────────────────────────────────────────────┘
 ```
 
-## 📋 Review Mode Flow
+### 🔄 The Application Lifecycle
+1. **Scraping**: Background workers trigger scrapers (LinkedIn, Naukri, Wellfound, RemoteOK, YCombinator, Adzuna, ATS, etc.) to capture new listings.
+2. **Filtering**: Deterministic filters discard irrelevant job titles and low salary ranges.
+3. **Scoring**: A composite vector-similarity and multi-dimensional Gemini AI model grades remaining jobs on a 0-100 scale.
+4. **Calibration**: Future scores self-calibrate using feedback Cap-lists containing your last 10 approved and skipped jobs.
+5. **Dashboard Actions**: You review jobs, click **Tailor Resume** to rewrite your LaTeX profile dynamically, or click **Autofill** via the browser extension to complete Greenhouse/Lever forms in 1 click.
+
+---
+
+## 📁 Repository & Service Directory Structure
+
+The repository is structured as a TypeScript monorepo with three core workspaces:
 
 ```
-1. Scrapers run every 6h → new jobs in DB
-2. Gemini scores each job (0-100) against your resume
-3. Dashboard shows scored jobs → you approve/skip
-4. Click "Tailor Resume" → Gemini Pro rewrites your .latex
-5. Click "Cover Letter" → Gemini Flash generates one
-6. Click "Approve & Apply" → Playwright fills form
-7. You confirm submit → screenshot saved → status tracked
+JobHunt/
+├── backend/            # Express API server & BullMQ background worker
+│   ├── prisma/         # Database schema declaration & migrations
+│   └── src/
+│       ├── api/        # REST Route controllers (jobs, settings, apps)
+│       ├── core/       # Logger, Redis, Prisma, Socket.io & Scraper Circuit Breaker
+│       ├── jobs/       # BullMQ queue & scheduler definitions
+│       ├── scripts/    # Database seeding, manual requeue, and test scripts
+│       ├── services/
+│       │   ├── ai-engine/  # Gemini LLM wrappers, feedback logic, resume tailoring
+│       │   └── scrapers/   # Scraper orchestrator & platform implementations
+│       └── workers/    # BullMQ Worker entrypoint
+├── frontend/           # Next.js 16 Web Dashboard UI
+│   └── src/
+│       ├── app/        # App router folders: analytics, applications, jobs, settings
+│       ├── components/ # Shared UI items (Job Cards, App Sidebar, Shadcn UI)
+│       └── lib/        # API endpoints configurations & types definitions
+└── extension/          # Chrome Copilot Extension
+    ├── src/
+    │   ├── background.ts # Manifest V3 service worker for API request routing
+    │   ├── content.ts    # React Input Trap Bypass & DOM field scraper/injector
+    │   └── App.tsx       # Extension popup/sidebar UI panel
 ```
 
-## 🤖 Gemini AI Usage
+### 1. Backend Service Details (`backend/`)
+- **[`prisma/schema.prisma`](file:///c:/Users/Lenovo/Code/JobHunt/backend/prisma/schema.prisma)**: Defines the database schema, including indexing for performance and relationships between `Job`, `Application`, `UserProfile`, `Settings`, `KnowledgeChunk` (for RAG), and `AnswerBank` (cached Q&A).
+- **[`src/core/scraperHealth.ts`](file:///c:/Users/Lenovo/Code/JobHunt/backend/src/core/scraperHealth.ts)**: A Redis-backed **Circuit Breaker** protecting scrapers. Automatically trips to `OPEN` after 3 consecutive failures to skip the broken scraper, transitioning back to `CLOSED` after a 2-hour cooldown.
+- **[`src/services/ai-engine/scorer.ts`](file:///c:/Users/Lenovo/Code/JobHunt/backend/src/services/ai-engine/scorer.ts)**: Computes cosine similarity of the candidate embedding vs job listing, checks deterministic cutoffs (YOE, salary), and feeds details into Gemini for multi-dimensional grading (Tech stack, Seniority, Domain, Compensation, Company tier).
+- **[`src/services/ai-engine/autofillGraph.ts`](file:///c:/Users/Lenovo/Code/JobHunt/backend/src/services/ai-engine/autofillGraph.ts)**: Stateful, graph-based form-filling agent using RAG and previous answer banks to resolve custom application questions.
 
-| Task | Model | Cost |
-|---|---|---|
-| Fit scoring | `gemini-1.5-flash` | ~free on free tier |
-| Resume tailoring | `gemini-1.5-pro` | ~$0.10-0.20/resume |
-| Cover letter | `gemini-1.5-flash` | ~free |
-| Embeddings | `text-embedding-004` | free |
+### 2. Frontend Dashboard (`frontend/`)
+- Built on **React 19 + Next.js 16** with Tailwind CSS v4.
+- Includes a full **Monaco Code Editor** integration for on-the-fly LaTeX editing of your base profile.
+- **Real-time Synchronization** powered by WebSockets (`Socket.io`) updates scraping/scoring states.
+- Recharts-based **Analytics Panels** to track application funnels, target salary statistics, and source distributions.
 
-## 📁 Key Files
+### 3. Chrome Extension (`extension/`)
+- Uses **Vite + CRXJS Vite Plugin** for fast Hot Module Replacement (HMR) in extension development.
+- **Bypasses the "React Input Trap"** (where direct JS `element.value = "val"` ignores React state tracking) by calling the native value property descriptor setter and dispatching bubble events.
 
-| File | Purpose |
-|---|---|
-| `BaseResume.latex` | Your base resume — auto-loaded on seed |
-| `backend/prisma/schema.prisma` | Database schema |
-| `backend/src/core/gemini.ts` | Gemini client (Flash + Pro + Embeddings) |
-| `backend/src/services/scrapers/` | All job scrapers |
-| `backend/src/services/ai-engine/` | Scoring + tailoring |
-| `frontend/src/app/(app)/` | All dashboard pages |
+---
 
-## 🗺️ Roadmap
+## ⚙️ Environment Variables (`.env`)
 
-- ✅ **Phase 1**: Job scraping + AI scoring
-- ✅ **Phase 2**: Review dashboard
-- ✅ **Phase 3**: Resume tailoring + cover letter
-- 🔲 **Phase 4**: Playwright auto-apply engine
-- 🔲 **Phase 5**: Gmail email watcher
+Create a `.env` file in the root directory. Copy and fill out these keys:
+
+```ini
+# Required: Gemini API Key (from Google AI Studio)
+GEMINI_API_KEY=your_gemini_api_key_here
+
+# Job Scrapers Config
+ADZUNA_APP_ID=your_adzuna_app_id
+ADZUNA_API_KEY=your_adzuna_api_key
+SERPER_API_KEY=your_optional_serper_key_here
+
+# Security & Secrets
+DASHBOARD_PASSWORD=your_secure_admin_password
+JWT_SECRET=random_hex_secret_string
+
+# Database & Cache Locations
+DATABASE_URL=postgresql://jobhunt:jobhunt_secret@localhost:5433/jobhunt
+REDIS_URL=redis://localhost:6379
+
+# Network Details
+NODE_ENV=development
+PORT=4000
+FRONTEND_URL=http://localhost:3000
+STORAGE_PATH=./storage
+```
+
+---
+
+## 🐳 Running with Containerization (Docker)
+
+To start the database, cache, backend server, BullMQ workers, and the frontend server together:
+
+### 1. Build and Start Services
+```bash
+docker compose up -d --build
+```
+
+### 2. Seed Database & Start Scoring
+On the first launch, seed the database with your settings and compile the resume knowledge chunks:
+```bash
+docker compose exec backend npm run db:seed
+```
+
+### 3. Monitor background jobs
+- **Bull Board (Queue Monitor)**: http://localhost:3001
+- **Next.js Dashboard**: http://localhost:3000
+- **Express Backend API**: http://localhost:4000
+
+---
+
+## 💻 Running Without Containerization (Bare-Metal)
+
+For local development or hosting without Docker, you will need Node.js (v20+) and local PostgreSQL + Redis running.
+
+### 1. Unified Monorepo Installation (Root Workspaces)
+To install dependencies for the backend, frontend, and extension with one command:
+```bash
+npm install
+```
+
+### 2. Set Up Database Schema
+Apply migrations or push the schema definitions directly:
+```bash
+npm run db:push --prefix backend
+```
+
+### 3. Seed Database Profile & LaTeX Chunks
+```bash
+npm run db:seed --prefix backend
+```
+
+### 4. Start Development Servers Concurrently
+Start the API, worker, frontend Next.js server, and Extension builder concurrently:
+```bash
+npm run dev
+```
+
+The services will start in watch mode with the following endpoints:
+- **API Server**: http://localhost:4000
+- **Frontend Dashboard**: http://localhost:3000
+- **Chrome Extension Builder**: Dev server running on http://localhost:5173
+
+---
+
+## 🛠️ Build and Production Deployment
+
+### Containerized Deployment (Multi-Stage Production Build)
+Our `Dockerfile`s use multi-stage compilation to keep production image sizes minimal:
+- **Backend Dockerfile** compiles TypeScript via `tsc --project tsconfig.json`, strips `devDependencies`, and executes standard JavaScript.
+- **Frontend Dockerfile** leverages Next.js `'standalone'` mode output to bundle files, creating an optimized runtime image of under 200MB.
+
+To test production container builds:
+```bash
+docker compose -f docker-compose.yml build
+```
+
+### Manual Production Build (No Containers)
+Compile all applications to JavaScript/production bundles:
+```bash
+npm run build:all
+```
+Once built, start the production run:
+```bash
+# Start Backend API
+node backend/dist/index.js
+
+# Start BullMQ worker
+node backend/dist/workers/worker.js
+
+# Start Next.js App
+npm start --prefix frontend
+```
+
+---
+
+## 🗺️ Roadmap & Current Status
+
+- [x] **Phase 1**: Automated Scraping (LinkedIn, Naukri, Wellfound, YCombinator, RemoteOK, Adzuna)
+- [x] **Phase 2**: Dual-pass AI Scoring (Semantic Embedding + CoT Gemini analysis)
+- [x] **Phase 3**: Resume Tailoring (LaTeX updates in-app via Gemini Pro)
+- [x] **Phase 4**: Automated Form Filling Chrome Copilot Extension
+- [ ] **Phase 5**: Gmail Tracking & Sentiment Analysis (Email watch integration)

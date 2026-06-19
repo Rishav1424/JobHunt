@@ -9,7 +9,7 @@ services:
       POSTGRES_PASSWORD: jobhunt_secret
       POSTGRES_DB: jobhunt
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -38,6 +38,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+      target: development
     container_name: jobhunt-backend
     restart: unless-stopped
     depends_on:
@@ -81,6 +82,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+      target: development
     container_name: jobhunt-worker
     restart: unless-stopped
     depends_on:
@@ -132,6 +134,7 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      target: development
     container_name: jobhunt-frontend
     restart: unless-stopped
     depends_on:

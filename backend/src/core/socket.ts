@@ -1,5 +1,6 @@
 import { Server, Socket } from 'socket.io';
 import { logger } from './logger';
+import { AutofillGraphExecutor } from '../services/ai-engine/autofillGraph';
 
 let io: Server | null = null;
 
@@ -18,8 +19,38 @@ export function setupSocket(server: Server): void {
       socket.leave(`job:${jobId}`);
     });
 
+    // ── Autofill WebSocket Listeners ─────────────────────────────────────────
+    socket.on('autofill:start', async (data: { jobId: string; fields: any[] }) => {
+      logger.info(`Received autofill:start from socket ${socket.id} for jobId: ${data.jobId}`);
+      
+      const executor = new AutofillGraphExecutor(
+        data.jobId,
+        data.fields,
+        socket.id,
+        (updatedState) => {
+          socket.emit('autofill:state-change', updatedState);
+        }
+      );
+      
+      AutofillGraphExecutor.registerRun(socket.id, executor);
+      await executor.execute();
+    });
+
+    socket.on('autofill:hitl-resolve', async (data: { answers: Record<string, string> }) => {
+      logger.info(`Received autofill:hitl-resolve from socket ${socket.id}`);
+      
+      const executor = AutofillGraphExecutor.getRun(socket.id);
+      if (executor) {
+        await executor.execute(data.answers);
+      } else {
+        logger.warn(`No active autofill run found to resolve for socket: ${socket.id}`);
+        socket.emit('autofill:error', { message: 'Autofill session expired or not found.' });
+      }
+    });
+
     socket.on('disconnect', () => {
       logger.debug(`Socket disconnected: ${socket.id}`);
+      AutofillGraphExecutor.removeRun(socket.id);
     });
   });
 }

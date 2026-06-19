@@ -94,6 +94,16 @@ export const proModel: GenerativeModel = genAI.getGenerativeModel({
   },
 });
 
+// Text model (no JSON enforcement) — for raw text generation (e.g. LaTeX resume)
+export const textModel: GenerativeModel = genAI.getGenerativeModel({
+  model: 'gemini-3.1-flash-lite',
+  generationConfig: {
+    temperature: 0.4,
+    topP: 0.9,
+    maxOutputTokens: 8192,
+  },
+});
+
 // ─── Embedding ────────────────────────────────────────────────────────────────
 const embeddingModelName = 'gemini-embedding-001';
 

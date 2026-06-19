@@ -69,7 +69,7 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
     );
   }
 
-  const analysis = job.fitAnalysis as any;
+  const analysis = job.fitAnalysis;
   const scoreClass = job.fitScore !== undefined
     ? job.fitScore >= 75 ? 'high' : job.fitScore >= 55 ? 'mid' : 'low'
     : 'low';

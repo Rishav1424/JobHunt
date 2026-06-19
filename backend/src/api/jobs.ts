@@ -111,6 +111,47 @@ jobsRouter.get('/health', async (_req: Request, res: Response) => {
   }
 });
 
+// GET /api/jobs/detect — find a job record by its application URL
+jobsRouter.get('/detect', async (req: Request, res: Response) => {
+  try {
+    const { url } = req.query as { url: string };
+    if (!url) return res.status(400).json({ error: 'URL query parameter is required' });
+
+    const cleanUrl = url.split('?')[0];
+    let job = await prisma.job.findFirst({
+      where: {
+        OR: [
+          { url: { contains: cleanUrl } },
+          { applyUrl: { contains: cleanUrl } },
+          { url: { contains: url } },
+        ],
+      },
+      include: { application: true },
+    });
+
+    if (!job) {
+      // Fuzzy fallback: check company name in URL parts
+      const parts = url.replace('https://', '').replace('http://', '').split('/');
+      if (parts.length >= 2) {
+        const companyPart = parts[1].toLowerCase();
+        job = await prisma.job.findFirst({
+          where: {
+            company: { contains: companyPart, mode: 'insensitive' }
+          },
+          include: { application: true },
+          orderBy: { scrapedAt: 'desc' }
+        });
+      }
+    }
+
+    if (!job) return res.status(404).json({ error: 'No matching job record found' });
+    res.json(job);
+  } catch (error) {
+    logger.error('GET /api/jobs/detect error', { error });
+    res.status(500).json({ error: 'Failed to detect job' });
+  }
+});
+
 // GET /api/jobs/:id — get single job with full details
 jobsRouter.get('/:id', async (req: Request, res: Response) => {
   try {
@@ -176,6 +217,9 @@ jobsRouter.patch('/:id/status', async (req: Request, res: Response) => {
 
     res.json(job);
   } catch (error) {
+    if (error instanceof z.ZodError) {
+      return res.status(400).json({ error: 'Validation failed', details: error.errors });
+    }
     logger.error('PATCH /api/jobs/:id/status error', { error });
     res.status(500).json({ error: 'Failed to update job status' });
   }

@@ -95,20 +95,24 @@ export function createScrapingWorker(): Worker {
           select: { id: true },
         });
 
-        // Mark as SCORING atomically
-        await prisma.job.updateMany({
-          where: { status: 'NEW' },
-          data: { status: 'SCORING' },
-        });
+        if (newJobRecords.length > 0) {
+          const ids = newJobRecords.map((j) => j.id);
+          
+          // Mark as SCORING atomically for these specific jobs only
+          await prisma.job.updateMany({
+            where: { id: { in: ids } },
+            data: { status: 'SCORING' },
+          });
 
-        const scoringJobs = newJobRecords.map((j) => ({
-          name: 'score-job',
-          data: { jobId: j.id },
-          opts: { priority: 1 },
-        }));
+          const scoringJobs = newJobRecords.map((j) => ({
+            name: 'score-job',
+            data: { jobId: j.id },
+            opts: { priority: 1 },
+          }));
 
-        await scoringQueue.addBulk(scoringJobs);
-        logger.info(`Enqueued ${scoringJobs.length} scoring jobs`);
+          await scoringQueue.addBulk(scoringJobs);
+          logger.info(`Enqueued ${scoringJobs.length} scoring jobs`);
+        }
       }
 
       return { total, newJobs, scraperResults };

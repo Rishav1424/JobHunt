@@ -90,6 +90,9 @@ applicationsRouter.patch('/:id', async (req: Request, res: Response) => {
     });
     res.json(app);
   } catch (error) {
+    if (error instanceof z.ZodError) {
+      return res.status(400).json({ error: 'Validation failed', details: error.errors });
+    }
     res.status(500).json({ error: 'Failed to update application' });
   }
 });
