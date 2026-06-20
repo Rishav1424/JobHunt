@@ -17,6 +17,14 @@ import { jobsRouter } from './api/jobs';
 import { applicationsRouter } from './api/applications';
 import { settingsRouter } from './api/settings';
 
+process.on('unhandledRejection', (reason, promise) => {
+  logger.error('⚠️ Unhandled Promise Rejection at:', promise, 'reason:', reason);
+});
+
+process.on('uncaughtException', (error) => {
+  logger.error('💥 Uncaught Exception caught:', error);
+});
+
 // ─── Storage directory ────────────────────────────────────────────────────────
 if (!fs.existsSync(config.STORAGE_PATH)) {
   fs.mkdirSync(config.STORAGE_PATH, { recursive: true });
@@ -45,7 +53,11 @@ app.use(express.urlencoded({ extended: true }));
 // Serve stored PDFs and screenshots
 app.use('/storage', express.static(config.STORAGE_PATH));
 
+import { authRouter, requireAuth } from './api/auth';
+
 // ─── API Routes ───────────────────────────────────────────────────────────────
+app.use('/api/auth', authRouter);
+app.use('/api', requireAuth);
 app.use('/api/jobs', jobsRouter);
 app.use('/api/applications', applicationsRouter);
 app.use('/api/settings', settingsRouter);

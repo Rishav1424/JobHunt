@@ -66,7 +66,7 @@ function isCompanyBlocked(company: string, userBlacklist: string[]): boolean {
  * Run all enabled scrapers and persist new jobs to DB.
  * Returns count of new unique jobs added.
  */
-export async function runAllScrapers(): Promise<{ total: number; newJobs: number; scraperResults: Record<string, string> }> {
+export async function runAllScrapers(targetScraperName?: string): Promise<{ total: number; newJobs: number; scraperResults: Record<string, string> }> {
   const settings = await prisma.settings.findFirst();
   if (!settings) throw new Error('Settings not initialized');
 
@@ -83,6 +83,10 @@ export async function runAllScrapers(): Promise<{ total: number; newJobs: number
   const scraperResults: Record<string, string> = {};
 
   for (const [name, scraper] of Object.entries(ALL_SCRAPERS)) {
+    if (targetScraperName && name !== targetScraperName) {
+      continue;
+    }
+
     if (enabledSources && enabledSources[name] === false) {
       logger.info(`Scraper "${name}" is disabled, skipping`);
       scraperResults[name] = 'DISABLED';

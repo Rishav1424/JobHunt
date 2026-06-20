@@ -41,10 +41,10 @@ async function testKnockout() {
     // Run score on senior job
     logger.info('Testing senior job knockout...');
     const result1 = await scoreJob(seniorJob.id);
-    if (result1 && result1.score === 0) {
-      logger.info('✅ Senior job knocked out successfully. Reason: ' + result1.whySkip);
+    if (result1 && result1.score > 0 && result1.score <= 60) {
+      logger.info('✅ Senior job soft-penalized successfully. Score: ' + result1.score + ', Verdict: ' + result1.verdict);
     } else {
-      logger.error('❌ Senior job knockout failed. Score: ' + (result1?.score ?? 'null'));
+      logger.error('❌ Senior job soft-penalty failed. Score: ' + (result1?.score ?? 'null'));
     }
 
     // Run score on low pay job

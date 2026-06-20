@@ -26,14 +26,14 @@ The platform follows a **Human-in-the-Loop (HITL)** architecture designed to pro
                                    ▼                       ▼
                    ┌──────────────────────────────┐┌───────────────┴───────┐
                    │    REDIS (BullMQ Queues)     ││  DATABASE (Postgres)  │
-                   │ - job-scraping  - job-scoring ││ - Prisma Client ORM   │
+                   │ - job-scraping - job-scoring ││ - Prisma Client ORM   │
                    └───────────────┬──────────────┘└───────▲───────────────┘
                                    │ worker processes      │ reads / writes
                                    ▼                       │
                    ┌───────────────────────────────────────┴───────┐
                    │            BULLMQ BACKGROUND WORKERS          │
                    │ - Playwright Headless Scraping & Details      │
-                   │ - Gemini AI Engine (Dimensional Fit scoring) │
+                   │ - Gemini AI Engine (Dimensional Fit scoring)  │
                    └───────────────────────┬───────────────────────┘
                                            │
                                            ▼ (Optional Copilot link)
@@ -134,21 +134,60 @@ STORAGE_PATH=./storage
 
 To start the database, cache, backend server, BullMQ workers, and the frontend server together:
 
-### 1. Build and Start Services
-```bash
-docker compose up -d --build
-```
+### 1. Docker Compose (Development with Watch Mode)
+This mode maps your local directory code using Docker volumes, runs development start scripts, and uses Compose Watch for real-time syncing of file changes:
 
-### 2. Seed Database & Start Scoring
-On the first launch, seed the database with your settings and compile the resume knowledge chunks:
 ```bash
-docker compose exec backend npm run db:seed
+docker compose watch
 ```
+*(Alternatively, run `docker compose up --watch` or use the root monorepo shortcut `npm run docker:watch` to start the containers and immediately begin watching for file changes).*
 
-### 3. Monitor background jobs
-- **Bull Board (Queue Monitor)**: http://localhost:3001
-- **Next.js Dashboard**: http://localhost:3000
-- **Express Backend API**: http://localhost:4000
+### 2. Individual Docker Containers
+You can build and run individual services separately (make sure to set correct environment variables like `DATABASE_URL` and `REDIS_URL` to point to your database and Redis hosts):
+
+* **Development Mode**:
+  Build the dev stages:
+  ```bash
+  docker build --target development -t jobhunt-backend ./backend
+  docker build --target development -t jobhunt-frontend ./frontend
+  ```
+  Run backend container:
+  ```bash
+  docker run -d --name jobhunt-backend-dev -p 4000:4000 \
+    -e DATABASE_URL="postgresql://jobhunt:jobhunt_secret@host.docker.internal:5433/jobhunt" \
+    -e REDIS_URL="redis://host.docker.internal:6379" \
+    -e GEMINI_API_KEY="your_api_key_here" \
+    jobhunt-backend
+  ```
+  Run frontend container:
+  ```bash
+  docker run -d --name jobhunt-frontend-dev -p 3000:3000 \
+    -e NODE_ENV="development" \
+    -e BACKEND_INTERNAL_URL="http://host.docker.internal:4000" \
+    jobhunt-frontend
+  ```
+
+* **Production Mode**:
+  Build the production stages:
+  ```bash
+  docker build --target production -t jobhunt-backend ./backend
+  docker build --target production -t jobhunt-frontend ./frontend
+  ```
+  Run backend container:
+  ```bash
+  docker run -d --name jobhunt-backend-prod -p 4000:4000 \
+    -e DATABASE_URL="postgresql://jobhunt:jobhunt_secret@host.docker.internal:5433/jobhunt" \
+    -e REDIS_URL="redis://host.docker.internal:6379" \
+    -e GEMINI_API_KEY="your_api_key_here" \
+    jobhunt-backend
+  ```
+  Run frontend container:
+  ```bash
+  docker run -d --name jobhunt-frontend-prod -p 3000:3000 \
+    -e NODE_ENV="production" \
+    -e BACKEND_INTERNAL_URL="http://host.docker.internal:4000" \
+    jobhunt-frontend
+  ```
 
 ---
 
@@ -159,61 +198,51 @@ For local development or hosting without Docker, you will need Node.js (v20+) an
 ### 1. Unified Monorepo Installation (Root Workspaces)
 To install dependencies for the backend, frontend, and extension with one command:
 ```bash
-npm install
+npm run install:all
 ```
 
 ### 2. Set Up Database Schema
 Apply migrations or push the schema definitions directly:
 ```bash
-npm run db:push --prefix backend
+npm run db:push
 ```
 
 ### 3. Seed Database Profile & LaTeX Chunks
 ```bash
-npm run db:seed --prefix backend
+npm run db:seed
 ```
 
-### 4. Start Development Servers Concurrently
-Start the API, worker, frontend Next.js server, and Extension builder concurrently:
-```bash
-npm run dev
-```
+### 4. Running the application
 
-The services will start in watch mode with the following endpoints:
-- **API Server**: http://localhost:4000
-- **Frontend Dashboard**: http://localhost:3000
-- **Chrome Extension Builder**: Dev server running on http://localhost:5173
+* **Development Mode (Concurrently starts dev servers with watch mode)**:
+  ```bash
+  npm run dev
+  ```
+  The services will start with the following endpoints:
+  - **API Server**: http://localhost:4000
+  - **Frontend Dashboard**: http://localhost:3000
+  - **Chrome Extension Builder**: Dev server running on http://localhost:5173
 
----
+* **Production Mode**:
+  Compile all applications to JavaScript/production bundles:
+  ```bash
+  npm run build:all
+  ```
+  Once compiled, run the production servers concurrently:
+  ```bash
+  npm run start:all
+  ```
+  Alternatively, start each service individually:
+  ```bash
+  # Start Backend API
+  node backend/dist/index.js
 
-## 🛠️ Build and Production Deployment
+  # Start BullMQ worker
+  node backend/dist/workers/worker.js
 
-### Containerized Deployment (Multi-Stage Production Build)
-Our `Dockerfile`s use multi-stage compilation to keep production image sizes minimal:
-- **Backend Dockerfile** compiles TypeScript via `tsc --project tsconfig.json`, strips `devDependencies`, and executes standard JavaScript.
-- **Frontend Dockerfile** leverages Next.js `'standalone'` mode output to bundle files, creating an optimized runtime image of under 200MB.
-
-To test production container builds:
-```bash
-docker compose -f docker-compose.yml build
-```
-
-### Manual Production Build (No Containers)
-Compile all applications to JavaScript/production bundles:
-```bash
-npm run build:all
-```
-Once built, start the production run:
-```bash
-# Start Backend API
-node backend/dist/index.js
-
-# Start BullMQ worker
-node backend/dist/workers/worker.js
-
-# Start Next.js App
-npm start --prefix frontend
-```
+  # Start Next.js App
+  npm start --prefix frontend
+  ```
 
 ---
 

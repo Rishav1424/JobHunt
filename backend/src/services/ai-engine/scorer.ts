@@ -62,33 +62,10 @@ function checkKnockout(
   description: string,
   minYoeCutoff: number,
   minSalaryCutoff: number
-): { knockedOut: boolean; reason: string } | null {
+): { knockedOut: boolean; reason?: string; seniorityPenalty?: number } {
   const combinedText = `${title}\n\n${description}`.toLowerCase();
 
-  // 1. Seniority Knockout
-  const isSeniorTitle = /\b(senior|sr\b|lead|principal|architect|manager|staff)\b/i.test(title) && !/\b(intern|co-op|fresher|graduate)\b/i.test(title);
-  
-  let yoeRequired = 0;
-  const rangeMatch = combinedText.match(/\b(\d+)\s*(?:-|to)\s*(\d+)\+?\s*(?:yoe|years|yrs|years\s+of\s+experience)\b/i);
-  
-  if (rangeMatch) {
-    // Range present, like "0-3 years" -> minimum required is the start value.
-    yoeRequired = parseInt(rangeMatch[1]);
-  } else {
-    const yoeMatch = combinedText.match(/\b([1-9]|\d{2})\+?\s*(?:yoe|years|yrs|years\s+of\s+experience)\b/i);
-    if (yoeMatch) {
-      yoeRequired = parseInt(yoeMatch[1]);
-    }
-  }
-
-  if (isSeniorTitle) {
-    return { knockedOut: true, reason: `Senior title detected: "${title}"` };
-  }
-  if (yoeRequired >= minYoeCutoff) {
-    return { knockedOut: true, reason: `Experience requirement is too high: ${yoeRequired}+ YOE (matched YOE required >= ${minYoeCutoff})` };
-  }
-
-  // 2. Low Compensation Knockout (salary in LPA)
+  // 1. Low Compensation Knockout (salary in LPA)
   const rangePayMatch = combinedText.match(/\b(\d+)\s*(?:-|to)\s*(\d+)\s*(?:lpa|lacs|lakhs?|lakh)\b/i);
   if (rangePayMatch) {
     const maxPay = parseInt(rangePayMatch[2]);
@@ -103,7 +80,7 @@ function checkKnockout(
       
       const matchIndex = singlePayMatch.index || 0;
       const matchLen = singlePayMatch[0].length;
-      const surrounding = combinedText.substring(Math.max(0, matchIndex - 10), Math.min(combinedText.length, matchIndex + matchLen + 10));
+      const surrounding = combinedText.substring(Math.max(0, matchIndex - 40), Math.min(combinedText.length, matchIndex + matchLen + 40));
       const isRangeText = /[\d]+\s*(?:-|to)\s*[\d]+/i.test(surrounding);
 
       if (!isRangeText && singleSal < minSalaryCutoff) {
@@ -112,22 +89,135 @@ function checkKnockout(
     }
   }
 
-  return null;
+  // 2. Seniority Penalty (soft knockout)
+  const isSeniorTitle = /\b(senior|sr\b|lead|principal|architect|manager|staff)\b/i.test(title) && !/\b(intern|co-op|fresher|graduate)\b/i.test(title);
+  
+  let yoeRequired = 0;
+  const rangeMatch = combinedText.match(/\b(\d+)\s*(?:-|to)\s*(\d+)\+?\s*(?:yoe|years|yrs|years\s+of\s+experience)\b/i);
+  
+  if (rangeMatch) {
+    yoeRequired = parseInt(rangeMatch[1]);
+  } else {
+    const yoeMatch = combinedText.match(/\b([1-9]|\d{2})\+?\s*(?:yoe|years|yrs|years\s+of\s+experience)\b/i);
+    if (yoeMatch) {
+      const matchIndex = yoeMatch.index || 0;
+      const preceding = combinedText.substring(Math.max(0, matchIndex - 60), matchIndex);
+      const hasSignal = /\b(minimum|require|at least|must have|experience of|exp|yoe)\b/i.test(preceding) || combinedText.includes('requirements');
+      if (hasSignal) {
+        yoeRequired = parseInt(yoeMatch[1]);
+      }
+    }
+  }
+
+  if (isSeniorTitle || yoeRequired >= minYoeCutoff) {
+    return { knockedOut: false, seniorityPenalty: 15 };
+  }
+
+  return { knockedOut: false };
+}
+
+// ─── Helper Functions ────────────────────────────────────────────────────────
+
+/**
+ * Truncate and preprocess job description to extract the signal-dense sections,
+ * removing benefits, perks, and EEO boilerplates.
+ */
+export function extractJDSignal(description: string): string {
+  const boilerplateMarkers = /\b(about us|what we offer|benefits|perks|equal opportunity|eeo|about the company|work culture|life at)\b/i;
+  const match = description.search(boilerplateMarkers);
+  const trimmed = match > 500 ? description.slice(0, match) : description;
+  return trimmed.slice(0, 2500);
+}
+
+/**
+ * Format structured profileJson (if available) into a clean, token-efficient text format.
+ */
+export function formatProfileJsonToText(profile: any): string {
+  const json = profile.profileJson;
+  if (!json || typeof json !== 'object') {
+    return '';
+  }
+  let text = `## Candidate Profile (Structured Summary)\n`;
+  if (json.facts) {
+    text += `### Basic Facts:\n`;
+    Object.entries(json.facts).forEach(([k, v]) => {
+      text += `- **${k}:** ${v}\n`;
+    });
+  }
+  if (json.skills) {
+    text += `### Technical Skills & Depth:\n`;
+    if (Array.isArray(json.skills)) {
+      json.skills.forEach((s: any) => {
+        text += `- **${s.name}:** ${s.level} (${s.context || ''})\n`;
+      });
+    }
+  }
+  if (json.preferences) {
+    text += `### Career & Domain Preferences:\n`;
+    if (json.preferences.rolePreferences) {
+      text += `- **Target Roles:** ${(json.preferences.rolePreferences.primary || []).join(', ')}\n`;
+      text += `- **Avoid Roles:** ${(json.preferences.rolePreferences.avoid || []).join(', ')}\n`;
+    }
+    if (json.preferences.domainInterests) {
+      text += `- **Domain Interests:** ${(json.preferences.domainInterests || []).join(', ')}\n`;
+    }
+    if (json.preferences.dealBreakers) {
+      text += `- **Deal Breakers:** ${(json.preferences.dealBreakers || []).join(', ')}\n`;
+    }
+  }
+  return text.trim();
+}
+
+/**
+ * Validate and normalize dynamic weights returned by Gemini.
+ * Ensures no single weight exceeds 50% (0.50) to prevent degenerate score collapses.
+ */
+export function validateAndNormalizeWeights(raw: Record<string, number> | undefined, defaults: Record<string, number>): Record<string, number> {
+  if (!raw || typeof raw !== 'object') return defaults;
+  const keys = Object.keys(defaults);
+  
+  // Reject if any key is missing or negative or not a number
+  const valid = keys.every(k => typeof raw[k] === 'number' && raw[k] >= 0);
+  if (!valid) return defaults;
+  
+  const sum = keys.reduce((acc, k) => acc + raw[k], 0);
+  if (sum === 0) return defaults;
+  
+  // Normalize
+  const normalized = Object.fromEntries(keys.map(k => [k, raw[k] / sum]));
+  
+  // Constrain: no single weight > 0.5 (prevents degenerate collapses)
+  const capped = Object.fromEntries(keys.map(k => [k, Math.min(normalized[k], 0.5)]));
+  const cappedSum = keys.reduce((acc, k) => acc + capped[k], 0);
+  if (cappedSum === 0) return defaults;
+  
+  return Object.fromEntries(keys.map(k => [k, capped[k] / cappedSum]));
 }
 
 // ─── Main Scoring Function ────────────────────────────────────────────────────
 
+/**
+ * Legacy wrapper: score a single job by delegating to the batch scorer.
+ */
 export async function scoreJob(jobId: string): Promise<FitAnalysis | null> {
+  const results = await scoreJobsBatch([jobId]);
+  return results[0]?.analysis || null;
+}
+
+/**
+ * Batch score up to 3 jobs in a single call to Gemini.
+ */
+export async function scoreJobsBatch(
+  jobIds: string[]
+): Promise<{ jobId: string; analysis: FitAnalysis | null }[]> {
+  const results: { jobId: string; analysis: FitAnalysis | null }[] = [];
+
   try {
-    const [job, settings, profile] = await Promise.all([
-      prisma.job.findUnique({ where: { id: jobId } }),
+    const [settings, profile] = await Promise.all([
       prisma.settings.findFirst(),
       prisma.userProfile.findFirst(),
     ]);
 
-    if (!job) return null;
-
-    // Use default configurations if settings/profile tables aren't initialized
     const targetCompanies = settings?.targetCompanies || [];
     const minYoeCutoff = settings?.minYoeCutoff ?? 3;
     const minSalaryCutoff = settings?.minSalaryCutoff ?? 15;
@@ -139,86 +229,20 @@ export async function scoreJob(jobId: string): Promise<FitAnalysis | null> {
       companyTier: 0.20,
     };
 
-    const isTargetCompany = isDreamCompany(job.company, targetCompanies);
-
-    // ── Pre-screening: Skip Gemini for clearly irrelevant roles ──────────
-    if (shouldPrescreen(job.title) && !isTargetCompany) {
-      logger.info(`Pre-screened out: "${job.title}" @ ${job.company}`);
-      const zeroAnalysis: FitAnalysis = {
-        score: 0,
-        dimensions: { techStack: 0, seniorityFit: 0, domainFit: 0, compensationFit: 0, companyTier: 0 },
-        verdict: 'Weak Match',
-        strengths: [],
-        gaps: ['Role type does not match target profile (Backend/SDE/FS)'],
-        reasons: ['Pre-screened: job domain does not match candidate target'],
-        whyApply: 'Not applicable — domain mismatch',
-        whySkip: `This is a ${job.title} role. Target is Backend/SDE/Full-Stack.`,
-        keywordsMatched: [],
-        recommendation: 'Skip — domain mismatch',
-        isTargetCompany: false,
-        prescreenPassed: false,
-      };
-      await prisma.job.update({
-        where: { id: jobId },
-        data: { fitScore: 0, fitAnalysis: zeroAnalysis as unknown as import('@prisma/client').Prisma.InputJsonValue, status: 'SCORED', scoredAt: new Date() },
-      });
-      return zeroAnalysis;
-    }
-
-    // ── Deterministic Heuristic Knockouts ────────────────────────────────
-    const knockout = checkKnockout(job.title, job.description, minYoeCutoff, minSalaryCutoff);
-    if (knockout) {
-      logger.info(`Deterministic Knockout triggered for "${job.title}" @ ${job.company}: ${knockout.reason}`);
-      const zeroAnalysis: FitAnalysis = {
-        score: 0,
-        dimensions: { techStack: 0, seniorityFit: 0, domainFit: 0, compensationFit: 0, companyTier: 0 },
-        verdict: 'Weak Match',
-        strengths: [],
-        gaps: [knockout.reason],
-        reasons: [`Knocked out: ${knockout.reason}`],
-        whyApply: 'Not applicable — requirement mismatch',
-        whySkip: knockout.reason,
-        keywordsMatched: [],
-        recommendation: 'Skip — requirement mismatch',
-        isTargetCompany,
-        prescreenPassed: false,
-      };
-      await prisma.job.update({
-        where: { id: jobId },
-        data: { fitScore: 0, fitAnalysis: zeroAnalysis as unknown as import('@prisma/client').Prisma.InputJsonValue, status: 'SCORED', scoredAt: new Date() },
-      });
-      return zeroAnalysis;
-    }
-
-    // ── Step 1: Embedding similarity (fast, no Gemini quota) ─────────────
-    let embeddingScore = 50; // default if no profile embedding
-    let jobEmbedding = job.embedding;
-
-    if (profile && profile.profileEmbedding.length > 0) {
-      if (!jobEmbedding || jobEmbedding.length === 0) {
-        const jdText = `${job.title} at ${job.company}\n\n${job.description}`;
-        jobEmbedding = await generateEmbedding(jdText.slice(0, 8000));
-        await prisma.job.update({ where: { id: jobId }, data: { embedding: jobEmbedding } });
-      }
-      const rawSimilarity = cosineSimilarity(profile.profileEmbedding, jobEmbedding);
-      // Normalize: cosine similarity for good matches typically 0.4–0.9, scale to 0-100
-      embeddingScore = Math.round(Math.max(0, Math.min(1, (rawSimilarity - 0.2) / 0.7)) * 100);
-    }
-
-    // ── Step 2: Feedback calibration (learns from your approvals/skips) ──
     const calibration = await getFeedbackCalibration();
-
-    // ── Step 3: Company Status & Cache Enrichment ─────────────────────────
     const mncList = settings?.mncCompanies || [];
     const startupList = settings?.tier1Startups || [];
     const serviceList = settings?.serviceCompanies || [];
-    const companyStatus = await getOrClassifyCompanyStatus(job.company, mncList, startupList, serviceList);
 
-    // ── Step 4: Dynamic Candidate Profile Formatting ──────────────────────
+    // Format Candidate Profile Text once for the batch
     let candidateProfileText = '';
     if (profile) {
-      const strippedResume = buildProfileText(profile);
-      candidateProfileText = `
+      const structuredSummary = formatProfileJsonToText(profile);
+      if (structuredSummary) {
+        candidateProfileText = structuredSummary;
+      } else {
+        const strippedResume = buildProfileText(profile);
+        candidateProfileText = `
 ## Candidate: ${profile.name} (Location: ${profile.location})
 - **Email:** ${profile.email}
 - **Phone:** ${profile.phone}
@@ -229,150 +253,285 @@ export async function scoreJob(jobId: string): Promise<FitAnalysis | null> {
 ${profile.skills.join(', ')}
 
 ### Resume Context & Details
-${strippedResume}
+${strippedResume.slice(0, 3000)}
 `.trim();
+      }
     } else {
-      // Fallback if profile not seeded
       candidateProfileText = `Candidate: Rishav Sharma. B.Tech NIT Durgapur. Skills: Java, C++, Spring Boot, Node.js, WebSockets, Postgres, Redis.`;
     }
 
-    // ── Step 5: Gemini multi-dimensional analysis ─────────────────────────
-    const prompt = buildScoringPrompt(
-      job.title,
-      job.company,
-      job.description,
-      job.salaryRaw,
-      embeddingScore,
-      calibration,
-      isTargetCompany,
-      companyStatus,
+    const jobsForGemini: any[] = [];
+
+    for (const jobId of jobIds) {
+      const job = await prisma.job.findUnique({ where: { id: jobId } });
+      if (!job) {
+        results.push({ jobId, analysis: null });
+        continue;
+      }
+
+      const isTargetCompany = isDreamCompany(job.company, targetCompanies);
+
+      // Pre-screening blocklist (soft domain pre-screen)
+      const matchesBlocklist = shouldPrescreen(job.title);
+
+      // Deterministic knockout
+      const knockout = checkKnockout(job.title, job.description, minYoeCutoff, minSalaryCutoff);
+
+      if (knockout && knockout.knockedOut) {
+        const reason = knockout.reason || 'Requirement mismatch';
+        logger.info(`Deterministic Knockout triggered for "${job.title}" @ ${job.company}: ${reason}`);
+        const zeroAnalysis: FitAnalysis = {
+          score: 0,
+          dimensions: { techStack: 0, seniorityFit: 0, domainFit: 0, compensationFit: 0, companyTier: 0 },
+          verdict: 'Weak Match',
+          strengths: [],
+          gaps: [reason],
+          reasons: [`Knocked out: ${reason}`],
+          whyApply: 'Not applicable — requirement mismatch',
+          whySkip: reason,
+          keywordsMatched: [],
+          recommendation: 'Skip — requirement mismatch',
+          isTargetCompany,
+          prescreenPassed: false,
+        };
+        await prisma.job.update({
+          where: { id: jobId },
+          data: { fitScore: 0, fitAnalysis: zeroAnalysis as any, status: 'SCORED', scoredAt: new Date() },
+        });
+        results.push({ jobId, analysis: zeroAnalysis });
+        continue;
+      }
+
+      // Compute embedding similarity score, prioritizing section-specific cluster embeddings
+      let embeddingScore = 50;
+      let jobEmbedding = job.embedding;
+
+      if (profile) {
+        if (!jobEmbedding || jobEmbedding.length === 0) {
+          const jdText = `${job.title} at ${job.company}\n\n${job.description}`;
+          jobEmbedding = await generateEmbedding(jdText.slice(0, 8000));
+          await prisma.job.update({ where: { id: jobId }, data: { embedding: jobEmbedding } });
+        }
+
+        const hasClusterEmbeddings =
+          (profile.skillsEmbedding && profile.skillsEmbedding.length > 0) ||
+          (profile.systemsEmbedding && profile.systemsEmbedding.length > 0) ||
+          (profile.webEmbedding && profile.webEmbedding.length > 0) ||
+          (profile.projectEmbedding && profile.projectEmbedding.length > 0);
+
+        if (hasClusterEmbeddings) {
+          const sims: number[] = [];
+          if (profile.skillsEmbedding && profile.skillsEmbedding.length > 0) {
+            sims.push(cosineSimilarity(profile.skillsEmbedding, jobEmbedding));
+          }
+          if (profile.systemsEmbedding && profile.systemsEmbedding.length > 0) {
+            sims.push(cosineSimilarity(profile.systemsEmbedding, jobEmbedding));
+          }
+          if (profile.webEmbedding && profile.webEmbedding.length > 0) {
+            sims.push(cosineSimilarity(profile.webEmbedding, jobEmbedding));
+          }
+          if (profile.projectEmbedding && profile.projectEmbedding.length > 0) {
+            sims.push(cosineSimilarity(profile.projectEmbedding, jobEmbedding));
+          }
+          const maxSim = sims.length > 0 ? Math.max(...sims) : cosineSimilarity(profile.profileEmbedding, jobEmbedding);
+          embeddingScore = Math.round(Math.max(0, Math.min(1, (maxSim - 0.2) / 0.7)) * 100);
+        } else if (profile.profileEmbedding && profile.profileEmbedding.length > 0) {
+          const rawSimilarity = cosineSimilarity(profile.profileEmbedding, jobEmbedding);
+          embeddingScore = Math.round(Math.max(0, Math.min(1, (rawSimilarity - 0.2) / 0.7)) * 100);
+        }
+      }
+
+      const companyStatus = await getOrClassifyCompanyStatus(job.company, mncList, startupList, serviceList);
+
+      jobsForGemini.push({
+        id: jobId,
+        title: job.title,
+        company: job.company,
+        description: extractJDSignal(job.description),
+        salaryRaw: job.salaryRaw,
+        embeddingScore,
+        companyStatus,
+        isTargetCompany,
+        titleMatchesBlocklist: matchesBlocklist,
+        seniorityPenalty: knockout.seniorityPenalty,
+      });
+    }
+
+    if (jobsForGemini.length === 0) {
+      return results;
+    }
+
+    // Call Gemini with the batch scoring prompt
+    const prompt = buildBatchScoringPrompt(
+      jobsForGemini,
       candidateProfileText,
+      calibration,
       dimensionWeights,
       minYoeCutoff,
       minSalaryCutoff
     );
 
-    const result = await callWithRetry(
+    const apiResult = await callWithRetry(
       () => flashModel.generateContent(prompt),
       4,
-      `scoreJob:${job.title}@${job.company}`
+      `scoreJobsBatch:${jobsForGemini.length} jobs`
     );
 
-    let analysis: FitAnalysis;
+    let parsedBatch: any[] = [];
     try {
-      const raw = parseGeminiJSON<Omit<FitAnalysis, 'prescreenPassed' | 'isTargetCompany'>>(result.response.text());
-      
-      // Calculate composite score programmatically to enforce accuracy
-      const weights = raw.adjustedWeights || dimensionWeights;
-
-      const sum = (weights.techStack || 0) + (weights.seniorityFit || 0) + (weights.domainFit || 0) + (weights.compensationFit || 0) + (weights.companyTier || 0);
-      const scale = sum > 0 ? 1 / sum : 1;
-
-      let finalScore = Math.round(
-        ((raw.dimensions.techStack * (weights.techStack || 0.15) +
-          raw.dimensions.seniorityFit * (weights.seniorityFit || 0.30) +
-          raw.dimensions.domainFit * (weights.domainFit || 0.10) +
-          raw.dimensions.compensationFit * (weights.compensationFit || 0.25) +
-          raw.dimensions.companyTier * (weights.companyTier || 0.20)) * scale)
-      );
-
-      // If red flags exist, cap final score at 60
-      if (raw.redFlags && raw.redFlags.length > 0) {
-        finalScore = Math.min(60, finalScore);
-      }
-
-      // If it's a dream company, give a floor boost of +10
-      if (isTargetCompany) {
-        finalScore = Math.min(100, finalScore + 10);
-      }
-
-      analysis = {
-        ...raw,
-        prescreenPassed: true,
-        isTargetCompany,
-        score: Math.max(0, Math.min(100, finalScore)),
-      };
+      parsedBatch = parseGeminiJSON<any[]>(apiResult.response.text());
     } catch (parseErr) {
-      logger.error(`Failed to parse scorer response for ${jobId}`, { parseErr });
-      // Embedding-only fallback
-      analysis = {
-        score: embeddingScore,
-        dimensions: { techStack: embeddingScore, seniorityFit: 60, domainFit: 70, compensationFit: 50, companyTier: 50 },
-        verdict: embeddingScore >= 75 ? 'Good Match' : embeddingScore >= 55 ? 'Partial Match' : 'Weak Match',
-        strengths: [],
-        gaps: ['AI analysis unavailable — embedding-only score'],
-        reasons: [`Embedding similarity: ${embeddingScore}/100`],
-        whyApply: 'Manual review needed',
-        whySkip: 'Insufficient data for full analysis',
-        keywordsMatched: [],
-        recommendation: 'Review manually',
-        isTargetCompany,
-        prescreenPassed: true,
-      };
+      logger.error('Failed to parse batch scorer JSON response', { parseErr });
     }
 
-    // ── Step 6: Persist ───────────────────────────────────────────────────
-    await prisma.job.update({
-      where: { id: jobId },
-      data: {
-        fitScore: analysis.score,
-        fitAnalysis: analysis as unknown as import('@prisma/client').Prisma.InputJsonValue,
-        status: 'SCORED',
-        scoredAt: new Date(),
-      },
-    });
+    for (const jobData of jobsForGemini) {
+      const jobId = jobData.id;
+      const rawAnalysis = Array.isArray(parsedBatch) ? parsedBatch.find((item) => item.jobId === jobId) : null;
 
-    logger.info(`Scored job ${jobId} (${job.title} @ ${job.company}): ${analysis.score}/100 [${analysis.verdict}]${isTargetCompany ? ' ⭐ DREAM COMPANY' : ''}`);
-    return analysis;
-  } catch (error) {
-    logger.error(`Error scoring job ${jobId}`, { error });
-    await prisma.job.update({
-      where: { id: jobId },
-      data: { status: 'SCORED', fitScore: -1 },
-    }).catch(() => null);
-    return null;
+      let finalAnalysis: FitAnalysis;
+
+      if (rawAnalysis) {
+        // Enforce blocklist soft penalty programmatically
+        if (jobData.titleMatchesBlocklist && !jobData.isTargetCompany) {
+          rawAnalysis.dimensions.domainFit = Math.min(rawAnalysis.dimensions.domainFit, 20);
+        }
+
+        // Apply seniority penalty if detected
+        if (jobData.seniorityPenalty !== undefined) {
+          rawAnalysis.dimensions.seniorityFit = Math.min(rawAnalysis.dimensions.seniorityFit, jobData.seniorityPenalty);
+        }
+
+        // Enforce validated and normalized weights
+        const weights = validateAndNormalizeWeights(rawAnalysis.adjustedWeights, dimensionWeights);
+
+        const sum = (weights.techStack || 0) + (weights.seniorityFit || 0) + (weights.domainFit || 0) + (weights.compensationFit || 0) + (weights.companyTier || 0);
+        const scale = sum > 0 ? 1 / sum : 1;
+
+        let finalScore = Math.round(
+          ((rawAnalysis.dimensions.techStack * (weights.techStack || 0.15) +
+            rawAnalysis.dimensions.seniorityFit * (weights.seniorityFit || 0.30) +
+            rawAnalysis.dimensions.domainFit * (weights.domainFit || 0.10) +
+            rawAnalysis.dimensions.compensationFit * (weights.compensationFit || 0.25) +
+            rawAnalysis.dimensions.companyTier * (weights.companyTier || 0.20)) * scale)
+        );
+
+        // If it's a dream company and no red flags, give a floor boost of +10
+        if (jobData.isTargetCompany && !(rawAnalysis.redFlags && rawAnalysis.redFlags.length > 0)) {
+          finalScore = Math.min(100, finalScore + 10);
+        }
+
+        // If red flags exist, cap final score at 60
+        if (rawAnalysis.redFlags && rawAnalysis.redFlags.length > 0) {
+          finalScore = Math.min(60, finalScore);
+        }
+
+        finalAnalysis = {
+          ...rawAnalysis,
+          prescreenPassed: true,
+          isTargetCompany: jobData.isTargetCompany,
+          score: Math.max(0, Math.min(100, finalScore)),
+        };
+
+        // Cache jdStructured if present
+        if (rawAnalysis.jdStructured) {
+          await prisma.job.update({
+            where: { id: jobId },
+            data: { jdStructured: rawAnalysis.jdStructured as any },
+          });
+        }
+      } else {
+        // Fallback for this job
+        finalAnalysis = {
+          score: jobData.embeddingScore,
+          dimensions: { techStack: jobData.embeddingScore, seniorityFit: 60, domainFit: 70, compensationFit: 50, companyTier: 50 },
+          verdict: jobData.embeddingScore >= 75 ? 'Good Match' : jobData.embeddingScore >= 55 ? 'Partial Match' : 'Weak Match',
+          strengths: [],
+          gaps: ['AI analysis unavailable — batch parsing fallback'],
+          reasons: [`Embedding similarity: ${jobData.embeddingScore}/100`],
+          whyApply: 'Manual review needed',
+          whySkip: 'Insufficient data for full analysis',
+          keywordsMatched: [],
+          recommendation: 'Review manually',
+          isTargetCompany: jobData.isTargetCompany,
+          prescreenPassed: true,
+        };
+      }
+
+      await prisma.job.update({
+        where: { id: jobId },
+        data: {
+          fitScore: finalAnalysis.score,
+          fitAnalysis: finalAnalysis as any,
+          status: 'SCORED',
+          scoredAt: new Date(),
+        },
+      });
+
+      logger.info(`Scored job ${jobId} (${jobData.title} @ ${jobData.company}): ${finalAnalysis.score}/100 [${finalAnalysis.verdict}]`);
+      results.push({ jobId, analysis: finalAnalysis });
+    }
+  } catch (err) {
+    logger.error('Error in batch scoring jobs', { error: err });
+    // Push errors
+    for (const jobId of jobIds) {
+      if (!results.some(r => r.jobId === jobId)) {
+        results.push({ jobId, analysis: null });
+      }
+    }
   }
+
+  return results;
 }
 
-// ─── Scoring Prompt ───────────────────────────────────────────────────────────
+// ─── Batch Scoring Prompt ────────────────────────────────────────────────────────
 
-function buildScoringPrompt(
-  jobTitle: string,
-  company: string,
-  jobDescription: string,
-  salaryRaw: string | null | undefined,
-  embeddingScore: number,
-  calibration: string,
-  isTargetCompany: boolean,
-  companyStatus: string,
+function buildBatchScoringPrompt(
+  jobs: {
+    id: string;
+    title: string;
+    company: string;
+    description: string;
+    salaryRaw: string | null | undefined;
+    embeddingScore: number;
+    companyStatus: string;
+    isTargetCompany: boolean;
+    titleMatchesBlocklist: boolean;
+  }[],
   candidateProfileText: string,
+  calibration: string,
   weights: Record<string, number>,
   minYoeCutoff: number,
   minSalaryCutoff: number
 ): string {
-  let companyStatusFlag = '';
-  if (companyStatus === 'MNC') {
-    companyStatusFlag = '\n- **Company Status:** Known Global MNC (Prestige Tier-1 Company)';
-  } else if (companyStatus === 'TIER_1_STARTUP') {
-    companyStatusFlag = '\n- **Company Status:** Known Tier-1 Indian Startup (High Growth, Well Funded)';
-  } else if (companyStatus === 'SERVICE') {
-    companyStatusFlag = '\n- **Company Status:** Service-Based Company (Infosys, TCS, Wipro, etc. - automatic low score)';
-  }
+  let jobsText = '';
+  jobs.forEach((job, idx) => {
+    let companyStatusFlag = '';
+    if (job.companyStatus === 'MNC') {
+      companyStatusFlag = '\n- **Company Status:** Known Global MNC (Prestige Tier-1 Company)';
+    } else if (job.companyStatus === 'TIER_1_STARTUP') {
+      companyStatusFlag = '\n- **Company Status:** Known Tier-1 Indian Startup (High Growth, Well Funded)';
+    } else if (job.companyStatus === 'SERVICE') {
+      companyStatusFlag = '\n- **Company Status:** Service-Based Company (Infosys, TCS, Wipro, etc. - automatic low score)';
+    }
 
-  return `You are an expert technical recruiter scoring a candidate's fit for a job. Be precise and honest.
+    jobsText += `
+---
+## Job #${idx + 1}
+- **Job ID:** ${job.id}
+- **Title:** ${job.title}
+- **Company:** ${job.company}${job.isTargetCompany ? ' ⭐ (DREAM COMPANY — candidate is highly interested)' : ''}${companyStatusFlag}
+- **Listed Salary:** ${job.salaryRaw || 'Not listed'}
+- **Embedding Similarity (semantic):** ${job.embeddingScore}/100
+- **Matches Blocklist Heuristics:** ${job.titleMatchesBlocklist ? 'Yes (SRE/DevOps/QA/ML/DataScience soft-block matches - penalize Domain Fit unless heavy SDE content)' : 'No'}
+
+### Job Description (Preprocessed):
+${job.description}
+`;
+  });
+
+  return `You are an expert technical recruiter scoring a candidate's fit for multiple jobs. Be precise and honest.
 
 ${candidateProfileText}
-
----
-
-## Job Being Scored
-- **Title:** ${jobTitle}
-- **Company:** ${company}${isTargetCompany ? ' ⭐ (DREAM COMPANY — candidate is highly interested)' : ''}${companyStatusFlag}
-- **Listed Salary:** ${salaryRaw || 'Not listed'}
-- **Embedding Similarity (semantic):** ${embeddingScore}/100
-
-## Job Description:
-${jobDescription.slice(0, 5000)}
 
 ---
 
@@ -380,10 +539,14 @@ ${calibration}
 
 ---
 
+## Jobs to Score:
+${jobsText}
+
+---
+
 ## SCORING INSTRUCTIONS
 
-Before determining the scores, evaluate the domain relevance and the tech stack requirements. Use a Chain of Thought to complete a pre-scoring step:
-
+For EACH job in the list, evaluate the candidate's fit based on:
 1. **Pre-scoring Reasoning & Weights Adjustment**:
    - Provide a "domainRelevance" assessment (e.g. "High - aligns with real-time distributed systems").
    - You can dynamically adjust the weights using "adjustedWeights".
@@ -411,6 +574,7 @@ Before determining the scores, evaluate the domain relevance and the tech stack 
    - Think: Is this a Backend/SDE/Full-Stack role, or something else?
    - Score 90-100: Core Backend / SDE / Distributed Systems / Full-Stack.
    - Score <40: Data Science, ML, Embedded, Mobile, QA, Frontend-only.
+   - If the job title matches blocklist heuristics, and description does not have heavy backend SDE coding, score this dimension below 30.
 
 5. **Dimension 4: Compensation Fit (weight: ${weights.compensationFit * 100}%)**
    - Think: Does salary match Rishav's minimum threshold of ${minSalaryCutoff} LPA?
@@ -429,42 +593,49 @@ Before determining the scores, evaluate the domain relevance and the tech stack 
 
 7. **Cultural Red Flags**:
    - Scan the job description for warning signs ("redFlags") that contradict Rishav's goals (e.g. "fast-paced environment with tight deadlines" - code for burnout, "maintain legacy systems", or strict in-office mandates).
-   - If a red flag is found, list it. The score will be capped at 60.
 
 ---
 
-Respond with ONLY valid JSON (no markdown, no extra text):
-{
-  "domainRelevance": "<reasoning about how closely the domain matches Rishav's background>",
-  "adjustedWeights": {
-    "techStack": <float 0.0-1.0>,
-    "seniorityFit": <float 0.0-1.0>,
-    "domainFit": <float 0.0-1.0>,
-    "compensationFit": <float 0.0-1.0>,
-    "companyTier": <float 0.0-1.0>
+Respond with ONLY a valid JSON array of objects (no markdown, no extra text, just raw JSON). Do not wrap the JSON array in markdown formatting:
+[
+  {
+    "jobId": "<ID of the job, exactly matching one of the Job IDs provided>",
+    "domainRelevance": "<reasoning about how closely the domain matches Rishav's background>",
+    "adjustedWeights": {
+      "techStack": <float 0.0-1.0>,
+      "seniorityFit": <float 0.0-1.0>,
+      "domainFit": <float 0.0-1.0>,
+      "compensationFit": <float 0.0-1.0>,
+      "companyTier": <float 0.0-1.0>
+    },
+    "dimensions": {
+      "techStack": <integer 0-100>,
+      "seniorityFit": <integer 0-100>,
+      "domainFit": <integer 0-100>,
+      "compensationFit": <integer 0-100>,
+      "companyTier": <integer 0-100>
+    },
+    "verdict": "<Strong Match|Good Match|Partial Match|Weak Match>",
+    "redFlags": ["<warning signs detected in JD>", ...],
+    "strengths": ["<specific strength from Rishav's profile matching this JD>", ...],
+    "gaps": ["<specific gap: what JD requires that Rishav lacks>", ...],
+    "reasons": ["<detailed reasoning bullet>", "<another>", ...],
+    "whyApply": "<1-2 sentences: strongest concrete argument FOR applying>",
+    "whySkip": "<1-2 sentences: biggest specific concern AGAINST applying, be honest>",
+    "salaryEstimate": "<your estimate of CTC range, e.g. '18-25 LPA' or 'unknown'>",
+    "keywordsMatched": ["<ATS keyword from JD present in Rishav's profile>", ...],
+    "recommendation": "<one actionable sentence starting with Apply/Skip/Review>",
+    "jdStructured": {
+      "requiredYoe": <number or null>,
+      "mustHaveSkills": ["<skill>", ...],
+      "techStack": ["<tech>", ...]
+    }
   },
-  "score": <integer 0-100, weighted composite>,
-  "dimensions": {
-    "techStack": <integer 0-100>,
-    "seniorityFit": <integer 0-100>,
-    "domainFit": <integer 0-100>,
-    "compensationFit": <integer 0-100>,
-    "companyTier": <integer 0-100>
-  },
-  "verdict": "<Strong Match|Good Match|Partial Match|Weak Match>",
-  "redFlags": ["<warning signs detected in JD>", ...],
-  "strengths": ["<specific strength from Rishav's profile matching this JD>", ...],
-  "gaps": ["<specific gap: what JD requires that Rishav lacks>", ...],
-  "reasons": ["<detailed reasoning bullet>", "<another>", ...],
-  "whyApply": "<1-2 sentences: strongest concrete argument FOR applying>",
-  "whySkip": "<1-2 sentences: biggest specific concern AGAINST applying, be honest>",
-  "salaryEstimate": "<your estimate of CTC range, e.g. '18-25 LPA' or 'unknown'>",
-  "keywordsMatched": ["<ATS keyword from JD present in Rishav's profile>", ...],
-  "recommendation": "<one actionable sentence starting with Apply/Skip/Review>"
-}`;
+  ...
+]`;
 }
 
-// ─── Profile Embedding ────────────────────────────────────────────────────────
+// ─── Profile Embedding & Reseeding ────────────────────────────────────────────
 
 export async function ensureProfileEmbedding(): Promise<void> {
   const profile = await prisma.userProfile.findFirst();
@@ -484,13 +655,88 @@ export async function ensureProfileEmbedding(): Promise<void> {
     data: { profileEmbedding: embedding, embeddingComputedAt: new Date() },
   });
 
+  const vectorStr = `[${embedding.join(',')}]`;
+  await prisma.$executeRawUnsafe(
+    'UPDATE "UserProfile" SET profile_embedding_vec = cast($1 as vector) WHERE id = $2',
+    vectorStr,
+    profile.id
+  );
+
   logger.info(`✅ Profile embedding computed (${embedding.length} dimensions)`);
 }
 
-function buildProfileText(profile: { baseResumeLatex: string }): string {
+export function buildProfileText(profile: { baseResumeLatex: string }): string {
   return profile.baseResumeLatex
     .replace(/\\[a-zA-Z]+(\{[^}]*\}|\[[^\]]*\])*/g, ' ')
     .replace(/[{}\\]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 }
+
+/**
+ * Recomputes segment-specific cluster embeddings for technical skills, backend systems,
+ * fullstack web, and project experience, caching them in the UserProfile.
+ */
+export async function recomputeClusterEmbeddings(profileId: string): Promise<void> {
+  try {
+    const profile = await prisma.userProfile.findUnique({ where: { id: profileId } });
+    if (!profile) return;
+
+    const latex = profile.baseResumeLatex;
+    if (!latex || latex.trim().startsWith('% Resume not found')) {
+      logger.warn('Skipping cluster embeddings recomputation: resume not found or empty.');
+      return;
+    }
+
+    logger.info('🧠 Clustering profile experience into sections using Gemini...');
+    const clusteringPrompt = `
+You are an expert resume parser and AI recruiter. Group the candidate's experience and skills from the following LaTeX resume into four key distinct areas:
+1. **skillsText**: A detailed list of all technical skills, languages, tools, frameworks, and core competencies.
+2. **systemsText**: All experience, projects, or bullets related to backend infrastructure, distributed systems, real-time systems, networking, database engineering, STOMP/WebSockets, clock sync, STREAMS, multi-threading, performance optimizations, and backend architecture.
+3. **webText**: All experience, projects, or bullets related to fullstack development, web applications, frontend frameworks (React, etc.), REST API design, user interfaces, and product-level web engineering.
+4. **projectsText**: A comprehensive summary of all major personal and professional projects, detailing what was built, key achievements, metrics, and technologies used.
+
+LaTeX Resume:
+${latex}
+
+Return a JSON object containing the fields: skillsText, systemsText, webText, and projectsText. Make each section a detailed description (approx 500-1000 characters each) to capture all rich context and keywords.
+`;
+
+    const response = await callWithRetry(async () => {
+      const result = await flashModel.generateContent(clusteringPrompt);
+      return result.response.text();
+    }, 3, 'clusterProfileExperience');
+
+    interface ClusteredProfile {
+      skillsText: string;
+      systemsText: string;
+      webText: string;
+      projectsText: string;
+    }
+
+    const clustered = parseGeminiJSON<ClusteredProfile>(response);
+    logger.info('   Clustered successfully. Generating section embeddings...');
+
+    const [skillsEmb, systemsEmb, webEmb, projectsEmb] = await Promise.all([
+      generateEmbedding(clustered.skillsText || 'No skills experience.'),
+      generateEmbedding(clustered.systemsText || 'No systems experience.'),
+      generateEmbedding(clustered.webText || 'No web experience.'),
+      generateEmbedding(clustered.projectsText || 'No projects experience.'),
+    ]);
+
+    await prisma.userProfile.update({
+      where: { id: profileId },
+      data: {
+        skillsEmbedding: skillsEmb,
+        systemsEmbedding: systemsEmb,
+        webEmbedding: webEmb,
+        projectEmbedding: projectsEmb,
+      },
+    });
+
+    logger.info('✅ Cluster embeddings recomputed successfully!');
+  } catch (err) {
+    logger.error('Failed to recompute cluster embeddings', { error: err });
+  }
+}
+

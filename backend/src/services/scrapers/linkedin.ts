@@ -1,11 +1,8 @@
-import { chromium } from 'playwright-extra';
-import stealth from 'puppeteer-extra-plugin-stealth';
-import { Browser, Page } from 'playwright';
+import { BrowserContext, Page } from 'playwright';
 import { JobSource, JobListing, ScraperQuery } from './base';
 import { logger } from '../../core/logger';
 import { config } from '../../core/config';
-
-chromium.use(stealth());
+import { browserPool } from './browserPool';
 
 const DETAIL_TIMEOUT_MS = 12000;
 const MAX_JOBS_PER_ROLE = 15;
@@ -38,22 +35,9 @@ export class LinkedInScraper extends JobSource {
   readonly name = 'linkedin';
 
   async scrape(query: ScraperQuery): Promise<JobListing[]> {
-    let browser: Browser | null = null;
+    let context: BrowserContext | null = null;
     try {
-      browser = await chromium.launch({
-        headless: true,
-        executablePath: config.CHROMIUM_PATH,
-        args: [
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-          '--disable-dev-shm-usage',
-          '--disable-blink-features=AutomationControlled',
-          '--disable-extensions',
-          '--disable-gpu',
-        ],
-      });
-
-      const context = await browser.newContext({
+      context = await browserPool.newContext({
         userAgent: getRandomItem(USER_AGENTS),
         viewport: { width: 1440, height: 900 },
         locale: 'en-IN',
@@ -67,6 +51,10 @@ export class LinkedInScraper extends JobSource {
       await context.route('**/*', (route) => {
         const url = route.request().url().toLowerCase();
         const resourceType = route.request().resourceType();
+        if (resourceType === 'document') {
+          route.continue();
+          return;
+        }
         if (
           resourceType === 'image' ||
           resourceType === 'stylesheet' ||
@@ -74,7 +62,7 @@ export class LinkedInScraper extends JobSource {
           resourceType === 'media' ||
           url.includes('google-analytics') ||
           url.includes('analytics') ||
-          url.includes('tracking') ||
+          (url.includes('tracking') && resourceType === 'script') ||
           url.includes('li/track') ||
           url.includes('doubleclick') ||
           url.includes('hotjar')
@@ -97,18 +85,18 @@ export class LinkedInScraper extends JobSource {
 
           logger.info(`LinkedIn: Scraping "${role}"`);
           await listPage.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-          await listPage.waitForTimeout(3000);
+          await listPage.waitForTimeout(2000 + Math.random() * 3000);
 
           // Scroll to load more results
           for (let i = 0; i < 3; i++) {
             await listPage.keyboard.press('End');
-            await listPage.waitForTimeout(1200);
+            await listPage.waitForTimeout(1000 + Math.random() * 1000);
           }
 
           const seeMoreBtn = listPage.locator('button:has-text("See more jobs")').first();
           if (await seeMoreBtn.isVisible().catch(() => false)) {
             await seeMoreBtn.click();
-            await listPage.waitForTimeout(2000);
+            await listPage.waitForTimeout(1500 + Math.random() * 1500);
           }
 
           // Extract job cards from list page
@@ -165,11 +153,11 @@ export class LinkedInScraper extends JobSource {
             });
 
             // Small delay between detail pages
-            await new Promise((r) => setTimeout(r, 800));
+            await new Promise((r) => setTimeout(r, 800 + Math.random() * 1200));
           }
 
           logger.info(`LinkedIn: Scraped ${Math.min(cards.length, MAX_JOBS_PER_ROLE)} jobs with descriptions for "${role}"`);
-          await listPage.waitForTimeout(4000);
+          await listPage.waitForTimeout(3000 + Math.random() * 3000);
         } catch (err) {
           logger.error(`LinkedIn error for role "${role}"`, { error: err });
         }
@@ -180,7 +168,7 @@ export class LinkedInScraper extends JobSource {
       logger.error('LinkedIn scraper error', { error });
       return [];
     } finally {
-      await browser?.close();
+      await context?.close();
     }
   }
 
@@ -195,7 +183,7 @@ export class LinkedInScraper extends JobSource {
     const page: Page = await context.newPage();
     try {
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: DETAIL_TIMEOUT_MS });
-      await page.waitForTimeout(1500);
+      await page.waitForTimeout(1000 + Math.random() * 1500);
 
       // 1. Shift to JSON-LD Data Extraction
       const jsonLdDescription = await page.evaluate(() => {

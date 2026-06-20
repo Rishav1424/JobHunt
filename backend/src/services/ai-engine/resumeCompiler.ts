@@ -16,14 +16,14 @@ const execPromise = util.promisify(exec);
  */
 export async function compileTailoredResume(
   jobId: string,
-  profileId = 'rishav-profile'
+  profileId?: string
 ): Promise<{ pdfPath: string; pdfUrl: string; latex: string }> {
   logger.info(`Starting resume tailoring for jobId: ${jobId}`);
 
   // 1. Fetch profile and job data
-  const profile = await prisma.userProfile.findUnique({
-    where: { id: profileId },
-  });
+  const profile = profileId
+    ? await prisma.userProfile.findUnique({ where: { id: profileId } })
+    : await prisma.userProfile.findFirst();
   if (!profile) {
     throw new Error('Candidate profile not found. Run db:seed.');
   }
@@ -35,18 +35,23 @@ export async function compileTailoredResume(
     throw new Error(`Job not found: ${jobId}`);
   }
 
-  // Check database cache first
+  // Check database cache first, but verify it exists on disk
   const existingApp = await prisma.application.findUnique({
     where: { jobId },
   });
   if (existingApp && existingApp.tailoredResumePdfPath && existingApp.tailoredResumeLatex) {
-    logger.info(`Found cached tailored resume in database for jobId: ${jobId}`);
-    const pdfUrl = `${config.FRONTEND_URL.replace('3000', '4000')}/storage/${existingApp.tailoredResumePdfPath}`;
-    return {
-      pdfPath: existingApp.tailoredResumePdfPath,
-      pdfUrl,
-      latex: existingApp.tailoredResumeLatex,
-    };
+    const absolutePath = path.resolve(config.STORAGE_PATH, existingApp.tailoredResumePdfPath);
+    if (fs.existsSync(absolutePath)) {
+      logger.info(`Found cached tailored resume in database and on disk for jobId: ${jobId}`);
+      const pdfUrl = `${config.FRONTEND_URL.replace('3000', '4000')}/storage/${existingApp.tailoredResumePdfPath}`;
+      return {
+        pdfPath: existingApp.tailoredResumePdfPath,
+        pdfUrl,
+        latex: existingApp.tailoredResumeLatex,
+      };
+    } else {
+      logger.warn(`Tailored resume cached in database but missing on disk: ${absolutePath}. Re-compiling...`);
+    }
   }
 
   // 2. Instruct Gemini to tailor the LaTeX resume
@@ -232,4 +237,111 @@ Tailored LaTeX:
     pdfUrl,
     latex: cleanLatex,
   };
+}
+
+/**
+ * Compiles a raw LaTeX string to a PDF and returns the URL of the compiled PDF.
+ */
+export async function compileRawLatex(
+  latex: string,
+  filename: string = 'Resume'
+): Promise<{ pdfUrl: string }> {
+  const tempId = `raw_${filename.replace(/[^a-zA-Z0-9]/g, '_')}_${Date.now()}`;
+  const tempDir = path.join(config.STORAGE_PATH, 'temp_compile');
+  if (!fs.existsSync(tempDir)) {
+    fs.mkdirSync(tempDir, { recursive: true });
+  }
+
+  const texFilePath = path.join(tempDir, `${tempId}.tex`);
+  fs.writeFileSync(texFilePath, latex, 'utf-8');
+
+  const outputDir = path.join(config.STORAGE_PATH, 'resumes');
+  if (!fs.existsSync(outputDir)) {
+    fs.mkdirSync(outputDir, { recursive: true });
+  }
+
+  let compiledSuccessfully = false;
+
+  // 1. Try local pdflatex
+  let localPdflatexAvailable = false;
+  try {
+    await execPromise('pdflatex --version');
+    localPdflatexAvailable = true;
+  } catch {}
+
+  if (localPdflatexAvailable) {
+    try {
+      const compileCmd = `pdflatex -interaction=nonstopmode -output-directory="${outputDir}" "${texFilePath}"`;
+      await execPromise(compileCmd);
+      await execPromise(compileCmd);
+      compiledSuccessfully = true;
+      logger.info(`✅ Raw LaTeX compiled successfully via local pdflatex`);
+    } catch (err) {
+      logger.warn('Local pdflatex compilation failed for raw LaTeX', { error: (err as Error).message });
+    }
+  }
+
+  // 2. Try YtoTech API
+  if (!compiledSuccessfully) {
+    try {
+      logger.info('Compiling raw LaTeX via YtoTech API...');
+      const response = await axios.post('https://latex.ytotech.com/builds/sync', {
+        compiler: 'pdflatex',
+        resources: [
+          {
+            main: true,
+            content: latex
+          }
+        ]
+      }, {
+        responseType: 'arraybuffer',
+        timeout: 15000
+      });
+
+      const finalPdfPath = path.join(outputDir, `${tempId}.pdf`);
+      fs.writeFileSync(finalPdfPath, Buffer.from(response.data));
+      compiledSuccessfully = true;
+      logger.info(`✅ Raw LaTeX compiled successfully via API`);
+    } catch (err) {
+      logger.warn('YtoTech API compilation failed for raw LaTeX', { error: (err as Error).message });
+    }
+  }
+
+  // 3. Try Docker fallback
+  if (!compiledSuccessfully) {
+    try {
+      logger.info('Compiling raw LaTeX via Docker...');
+      const hostStoragePath = path.resolve(config.STORAGE_PATH);
+      const compileCmd = `docker run --rm -v "${hostStoragePath}:/app/storage" jobhunt-worker:latest pdflatex -interaction=nonstopmode -output-directory="/app/storage/resumes" "/app/storage/temp_compile/${tempId}.tex"`;
+      await execPromise(compileCmd);
+      await execPromise(compileCmd);
+
+      const compiledPdfPath = path.join(outputDir, `${tempId}.pdf`);
+      if (fs.existsSync(compiledPdfPath)) {
+        compiledSuccessfully = true;
+        logger.info(`✅ Raw LaTeX compiled successfully via Docker`);
+      }
+    } catch (err) {
+      logger.error('Docker compilation failed for raw LaTeX', { error: (err as Error).message });
+    }
+  }
+
+  // Clean up auxiliary files
+  try {
+    const cleanUpExtensions = ['.aux', '.log', '.out', '.tex'];
+    cleanUpExtensions.forEach((ext) => {
+      const auxPath = path.join(outputDir, `${tempId}${ext}`);
+      if (fs.existsSync(auxPath)) fs.unlinkSync(auxPath);
+    });
+    if (fs.existsSync(texFilePath)) fs.unlinkSync(texFilePath);
+  } catch {}
+
+  if (!compiledSuccessfully) {
+    throw new Error('All LaTeX compilation methods failed.');
+  }
+
+  const relativePdfPath = `resumes/${tempId}.pdf`;
+  const pdfUrl = `${config.FRONTEND_URL.replace('3000', '4000')}/storage/${relativePdfPath}`;
+
+  return { pdfUrl };
 }

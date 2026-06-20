@@ -12,10 +12,12 @@
     "install:all": "npm install && npm run db:generate --prefix backend",
     "dev": "concurrently -n \"api,worker,web,ext\" -c \"cyan,magenta,green,yellow\" \"npm run dev --prefix backend\" \"npm run dev:worker --prefix backend\" \"npm run dev --prefix frontend\" \"npm run dev --prefix extension\"",
     "build:all": "npm run build --prefix backend && npm run build --prefix frontend && npm run build --prefix extension",
+    "start:all": "concurrently -n \"api,worker,web\" -c \"cyan,magenta,green\" \"node backend/dist/index.js\" \"node backend/dist/workers/worker.js\" \"npm run start --prefix frontend\"",
     "db:push": "npm run db:push --prefix backend",
     "db:seed": "npm run db:seed --prefix backend",
     "db:studio": "npm run db:studio --prefix backend",
     "docker:up": "docker compose up -d",
+    "docker:watch": "docker compose watch",
     "docker:down": "docker compose down",
     "docker:logs": "docker compose logs -f"
   },

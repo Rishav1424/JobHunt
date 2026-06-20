@@ -1,12 +1,9 @@
-import { chromium } from 'playwright-extra';
-import stealth from 'puppeteer-extra-plugin-stealth';
-import { Browser, Page } from 'playwright';
+import { BrowserContext, Page } from 'playwright';
 import { JobSource, JobListing, ScraperQuery } from './base';
 import { logger } from '../../core/logger';
 import { config } from '../../core/config';
 import { fetchJobDetails } from './detailFetcher';
-
-chromium.use(stealth());
+import { browserPool } from './browserPool';
 
 const USER_AGENTS = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
@@ -25,19 +22,14 @@ function getRandomItem<T>(arr: T[]): T {
   return arr[Math.floor(Math.random() * arr.length)];
 }
 
-/**
- * Wellfound (AngelList) scraper.
- * Scrapes startup SDE jobs with salary info.
- * URL: https://wellfound.com/jobs?role=software-engineer&locationSlugs=india&remote=true
- */
 export class WellfoundScraper extends JobSource {
   readonly name = 'wellfound';
 
   async scrape(query: ScraperQuery): Promise<JobListing[]> {
-    let browser: Browser | null = null;
+    let context: BrowserContext | null = null;
     try {
-      browser = await this.launchBrowser();
-      const page = await this.newStealthPage(browser);
+      context = await this.newStealthContext();
+      const page = await context.newPage();
       const listings: JobListing[] = [];
 
       const searchUrls = this.buildUrls(query);
@@ -136,7 +128,7 @@ export class WellfoundScraper extends JobSource {
       logger.error('Wellfound scraper error', { error });
       return [];
     } finally {
-      await browser?.close();
+      await context?.close();
     }
   }
 
@@ -161,23 +153,8 @@ export class WellfoundScraper extends JobSource {
     return [...new Set(urls)]; // deduplicate
   }
 
-  private async launchBrowser(): Promise<Browser> {
-    return chromium.launch({
-      headless: true,
-      executablePath: config.CHROMIUM_PATH,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-blink-features=AutomationControlled',
-        '--disable-dev-shm-usage',
-        '--disable-extensions',
-        '--disable-gpu',
-      ],
-    });
-  }
-
-  private async newStealthPage(browser: Browser): Promise<Page> {
-    const context = await browser.newContext({
+  private async newStealthContext(): Promise<BrowserContext> {
+    const context = await browserPool.newContext({
       userAgent: getRandomItem(USER_AGENTS),
       viewport: { width: 1920, height: 1080 },
       locale: 'en-IN',
@@ -191,6 +168,10 @@ export class WellfoundScraper extends JobSource {
     await context.route('**/*', (route) => {
       const url = route.request().url().toLowerCase();
       const resourceType = route.request().resourceType();
+      if (resourceType === 'document') {
+        route.continue();
+        return;
+      }
       if (
         resourceType === 'image' ||
         resourceType === 'stylesheet' ||
@@ -198,7 +179,7 @@ export class WellfoundScraper extends JobSource {
         resourceType === 'media' ||
         url.includes('google-analytics') ||
         url.includes('analytics') ||
-        url.includes('tracking') ||
+        (url.includes('tracking') && resourceType === 'script') ||
         url.includes('doubleclick') ||
         url.includes('hotjar')
       ) {
@@ -208,7 +189,7 @@ export class WellfoundScraper extends JobSource {
       }
     });
 
-    return context.newPage();
+    return context;
   }
 
   private async autoScroll(page: Page): Promise<void> {

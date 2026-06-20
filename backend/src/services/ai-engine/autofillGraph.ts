@@ -224,7 +224,7 @@ export class AutofillGraphExecutor {
   private async matchStaticFields() {
     logger.info('Running Node: MatchStaticFields');
     this.emitProgress('Matching static fields (Name, Email, Socials)...');
-    const profile = await prisma.userProfile.findUnique({ where: { id: 'rishav-profile' } });
+    const profile = await prisma.userProfile.findFirst();
     if (!profile) {
       throw new Error('User profile not found. Seed user profile first.');
     }
@@ -283,7 +283,7 @@ export class AutofillGraphExecutor {
    */
   private async processCustomFields() {
     logger.info('Running Node: ProcessCustomFields');
-    const profile = await prisma.userProfile.findUnique({ where: { id: 'rishav-profile' } });
+    const profile = await prisma.userProfile.findFirst();
     if (!profile) return;
 
     // Filter fields that are still missing answers (excluding file upload/resumes)

@@ -166,15 +166,90 @@ jobsRouter.get('/:id', async (req: Request, res: Response) => {
   }
 });
 
+// PATCH /api/jobs/bulk-status — bulk update status of multiple jobs
+const bulkUpdateStatusSchema = z.object({
+  ids: z.array(z.string()),
+  status: z.enum(['APPROVED', 'SKIPPED', 'BLACKLISTED', 'REVIEWING']),
+  whySkip: z.string().optional(),
+  userComment: z.string().optional(),
+});
+
+jobsRouter.patch('/bulk-status', async (req: Request, res: Response) => {
+  try {
+    const { ids, status, whySkip, userComment } = bulkUpdateStatusSchema.parse(req.body);
+    if (ids.length === 0) return res.json({ count: 0 });
+
+    const jobsBefore = await prisma.job.findMany({ where: { id: { in: ids } } });
+
+    // Update statuses in db
+    const updatedResult = await prisma.job.updateMany({
+      where: { id: { in: ids } },
+      data: { status },
+    });
+
+    // Run side-effects for each job
+    for (const job of jobsBefore) {
+      const analysis = job.fitAnalysis as any;
+
+      if (status === 'APPROVED') {
+        await recordApproval(
+          job.title,
+          job.company,
+          job.fitScore || 0,
+          analysis?.dimensions,
+          analysis?.strengths || [],
+          userComment
+        );
+        await prisma.application.upsert({
+          where: { jobId: job.id },
+          create: { jobId: job.id, status: 'PENDING' },
+          update: {},
+        });
+        const { resumeQueue } = require('../../jobs/queues');
+        resumeQueue.add('tailor-resume', { jobId: job.id }).catch((err: any) => {
+          logger.error(`Failed to queue background resume compilation for job ${job.id}`, { error: err });
+        });
+      } else if (status === 'SKIPPED') {
+        await recordSkip(
+          job.title,
+          job.company,
+          job.fitScore || 0,
+          analysis?.dimensions,
+          analysis?.gaps || [],
+          whySkip || analysis?.whySkip,
+          userComment
+        );
+      } else if (status === 'BLACKLISTED') {
+        await prisma.settings.updateMany({
+          data: { blacklistedCompanies: { push: job.company } },
+        });
+      }
+    }
+
+    res.json({ count: updatedResult.count });
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return res.status(400).json({ error: 'Validation failed', details: error.errors });
+    }
+    logger.error('PATCH /api/jobs/bulk-status error', { error });
+    res.status(500).json({ error: 'Failed to bulk update status' });
+  }
+});
+
 // PATCH /api/jobs/:id/status — update job status with feedback signals
 const updateStatusSchema = z.object({
   status: z.enum(['APPROVED', 'SKIPPED', 'BLACKLISTED', 'REVIEWING']),
+  whySkip: z.string().optional(),
+  userComment: z.string().optional(),
 });
 
 jobsRouter.patch('/:id/status', async (req: Request, res: Response) => {
   try {
-    const { status } = updateStatusSchema.parse(req.body);
+    const { status, whySkip, userComment } = updateStatusSchema.parse(req.body);
     const jobId = paramId(req, 'id');
+
+    const jobBefore = await prisma.job.findUnique({ where: { id: jobId } });
+    if (!jobBefore) return res.status(404).json({ error: 'Job not found' });
 
     const job = await prisma.job.update({
       where: { id: jobId },
@@ -182,18 +257,16 @@ jobsRouter.patch('/:id/status', async (req: Request, res: Response) => {
     });
 
     // ── Record feedback signal ────────────────────────────────────────────
-    const analysis = job.fitAnalysis as {
-      score?: number;
-      keywordsMatched?: string[];
-      gaps?: string[];
-    } | null;
+    const analysis = jobBefore.fitAnalysis as any;
 
     if (status === 'APPROVED') {
       await recordApproval(
         job.title,
         job.company,
         job.fitScore || 0,
-        analysis?.keywordsMatched || []
+        analysis?.dimensions,
+        analysis?.strengths || [],
+        userComment
       );
       // Create pending application record
       await prisma.application.upsert({
@@ -201,12 +274,20 @@ jobsRouter.patch('/:id/status', async (req: Request, res: Response) => {
         create: { jobId, status: 'PENDING' },
         update: {},
       });
+      // Enqueue background resume compilation in the BullMQ queue
+      const { resumeQueue } = require('../../jobs/queues');
+      resumeQueue.add('tailor-resume', { jobId }).catch((err: any) => {
+        logger.error(`Failed to queue background resume compilation for job ${jobId}`, { error: err });
+      });
     } else if (status === 'SKIPPED') {
       await recordSkip(
         job.title,
         job.company,
         job.fitScore || 0,
-        analysis?.gaps || []
+        analysis?.dimensions,
+        analysis?.gaps || [],
+        whySkip || analysis?.whySkip,
+        userComment
       );
     } else if (status === 'BLACKLISTED') {
       // Add company to blacklist in settings
@@ -226,12 +307,76 @@ jobsRouter.patch('/:id/status', async (req: Request, res: Response) => {
 });
 
 // POST /api/jobs/scrape — trigger manual scrape
-jobsRouter.post('/scrape', async (_req: Request, res: Response) => {
+jobsRouter.post('/scrape', async (req: Request, res: Response) => {
   try {
-    await triggerManualScrape();
-    res.json({ message: 'Scraping started. Check Bull Board at :3001 for progress.' });
+    const { targetScraperName } = req.body || {};
+    await triggerManualScrape(targetScraperName);
+    res.json({ message: `Scraping started${targetScraperName ? ` for ${targetScraperName}` : ''}. Check Bull Board at :3001 for progress.` });
   } catch (error) {
     res.status(500).json({ error: 'Failed to trigger scrape' });
+  }
+});
+
+// POST /api/jobs/scrapers/:name/reset — reset circuit breaker for a specific scraper
+jobsRouter.post('/scrapers/:name/reset', async (req: Request, res: Response) => {
+  try {
+    const { name } = req.params;
+    const { recordSuccess } = require('../core/scraperHealth');
+    await recordSuccess(name);
+    res.json({ message: `Circuit breaker reset for ${name}` });
+  } catch (error) {
+    logger.error(`Failed to reset circuit breaker for ${name}`, { error });
+    res.status(500).json({ error: 'Failed to reset circuit breaker' });
+  }
+});
+
+// GET /api/jobs/queues/status — get job counts for all BullMQ queues
+jobsRouter.get('/queues/status', async (_req: Request, res: Response) => {
+  try {
+    const { scrapingQueue, scoringQueue, resumeQueue } = require('../jobs/queues');
+    const [scrapingCounts, scoringCounts, resumeCounts] = await Promise.all([
+      scrapingQueue.getJobCounts('wait', 'active', 'failed', 'completed', 'delayed', 'paused'),
+      scoringQueue.getJobCounts('wait', 'active', 'failed', 'completed', 'delayed', 'paused'),
+      resumeQueue.getJobCounts('wait', 'active', 'failed', 'completed', 'delayed', 'paused'),
+    ]);
+    res.json({
+      queues: [
+        { name: 'job-scraping', displayName: 'Scraping Queue', counts: scrapingCounts },
+        { name: 'job-scoring', displayName: 'Scoring Queue', counts: scoringCounts },
+        { name: 'resume-compilation', displayName: 'Resume Compilation Queue', counts: resumeCounts },
+      ]
+    });
+  } catch (error) {
+    logger.error('GET /api/jobs/queues/status error', { error });
+    res.status(500).json({ error: 'Failed to fetch queue status' });
+  }
+});
+
+// POST /api/jobs/queues/:name/drain — drain a specific BullMQ queue
+jobsRouter.post('/queues/:name/drain', async (req: Request, res: Response) => {
+  try {
+    const { name } = req.params;
+    const { scrapingQueue, scoringQueue, resumeQueue } = require('../jobs/queues');
+    let targetQueue;
+    if (name === 'job-scraping') targetQueue = scrapingQueue;
+    else if (name === 'job-scoring') targetQueue = scoringQueue;
+    else if (name === 'resume-compilation') targetQueue = resumeQueue;
+
+    if (!targetQueue) {
+      return res.status(404).json({ error: 'Queue not found' });
+    }
+
+    await Promise.all([
+      targetQueue.drain(true),
+      targetQueue.clean(0, 0, 'completed'),
+      targetQueue.clean(0, 0, 'failed'),
+      targetQueue.clean(0, 0, 'active'),
+    ]);
+
+    res.json({ message: `Queue ${name} drained successfully` });
+  } catch (error) {
+    logger.error(`Failed to drain queue ${name}`, { error });
+    res.status(500).json({ error: 'Failed to drain queue' });
   }
 });
 

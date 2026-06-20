@@ -112,10 +112,16 @@ const embeddingModelName = 'gemini-embedding-001';
  * Uses retry wrapper — embeddings can also hit rate limits.
  */
 export async function generateEmbedding(text: string): Promise<number[]> {
+  if (!text || text.trim() === '') {
+    logger.warn('generateEmbedding: received empty or whitespace text, returning 768 zero values');
+    return new Array(768).fill(0);
+  }
+
   return callWithRetry(async () => {
     const model = genAI.getGenerativeModel({ model: embeddingModelName });
-    const request: EmbedContentRequest = {
+    const request: any = {
       content: { parts: [{ text }], role: 'user' },
+      outputDimensionality: 768,
     };
     const result = await model.embedContent(request);
     return result.embedding.values;

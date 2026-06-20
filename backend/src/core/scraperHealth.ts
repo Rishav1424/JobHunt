@@ -118,7 +118,13 @@ export async function recordFailure(name: string, reason: string): Promise<void>
  * Get health status for all scrapers (for the health API).
  */
 export async function getAllScraperHealth(): Promise<Record<string, ScraperHealth>> {
-  const scraperNames = ['adzuna', 'remoteok', 'wellfound', 'instahyre', 'linkedin', 'naukri', 'ats', 'ycombinator'];
+  let scraperNames = ['adzuna', 'remoteok', 'wellfound', 'instahyre', 'linkedin', 'naukri', 'ats', 'ycombinator'];
+  try {
+    const { ALL_SCRAPERS } = require('../services/scrapers/index');
+    scraperNames = Object.keys(ALL_SCRAPERS);
+  } catch (err) {
+    logger.warn('Failed to dynamically load ALL_SCRAPERS keys, using defaults', { error: err });
+  }
   const result: Record<string, ScraperHealth> = {};
 
   for (const name of scraperNames) {

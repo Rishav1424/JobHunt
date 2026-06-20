@@ -74,6 +74,7 @@ model Job {
   // AI Analysis
   fitScore    Float?    // 0-100
   fitAnalysis Json?     // { score, reasons[], missing_skills[], strengths[], salaryEstimate }
+  jdStructured Json?
   embedding   Float[]   // Gemini text-embedding-004 (768-dim), stored as float array
   
   // Dedup hash
@@ -170,6 +171,18 @@ model UserProfile {
   // Structured skills (auto-parsed from resume, editable)
   skills           String[]
   
+  // Structured JSON data
+  profileJson      Json?
+  
+  // Cluster embeddings for semantic scoring
+  skillsEmbedding  Float[]
+  systemsEmbedding Float[]
+  webEmbedding     Float[]
+  projectEmbedding Float[]
+
+  // Native pgvector column mapping
+  profile_embedding_vec Unsupported("vector(768)")?
+  
   updatedAt        DateTime @updatedAt
 }
 
@@ -228,6 +241,7 @@ model KnowledgeChunk {
   title       String?  // e.g. "Distributed Chess Platform"
   content     String   @db.Text
   embedding   Float[]  // 768-dimensional Gemini embedding
+  embedding_vec Unsupported("vector(768)")?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -239,6 +253,7 @@ model AnswerBank {
   question   String   @unique
   answer     String   @db.Text
   embedding  Float[]  // 768-dimensional Gemini embedding of the question
+  embedding_vec Unsupported("vector(768)")?
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 }

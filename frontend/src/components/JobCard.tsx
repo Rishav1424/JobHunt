@@ -105,7 +105,7 @@ export default function JobCard({ job, onApprove, onSkip, onBlacklist }: JobCard
               variant="link"
               size="icon"
               className="h-7 w-7"
-            // render={<a href={job.url} target="_blank" rel="noopener noreferrer" />}
+              asChild
             >
               <Link href={job.url} target="_blank" rel="noopener noreferrer">
                 <ExternalLink className="w-3.5 h-3.5" />

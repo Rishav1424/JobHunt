@@ -162,12 +162,113 @@ function injectReactField(element: HTMLInputElement | HTMLTextAreaElement | HTML
 
 // ── Listener for Sidebar communication ────────────────────────────────────────
 
+/**
+ * Programmatically inject a file (like the tailored resume PDF) into a file input element.
+ * Fetches the PDF blob from the backend storage and loads it using the DataTransfer API.
+ */
+async function injectFile(element: HTMLInputElement, fileUrl: string, filename: string): Promise<boolean> {
+  try {
+    console.log(`Fetching resume PDF from: ${fileUrl}...`);
+    const response = await fetch(fileUrl);
+    if (!response.ok) throw new Error(`Failed to fetch file: ${response.statusText}`);
+    const blob = await response.blob();
+    const file = new File([blob], filename, { type: 'application/pdf' });
+
+    const dt = new DataTransfer();
+    dt.items.add(file);
+
+    // Bypass React setter if necessary
+    const nativeInputValue = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype, 'files'
+    )?.set;
+
+    if (nativeInputValue) {
+      nativeInputValue.call(element, dt.files);
+    } else {
+      element.files = dt.files;
+    }
+
+    element.dispatchEvent(new Event('change', { bubbles: true }));
+    element.dispatchEvent(new Event('input', { bubbles: true }));
+    console.log(`✅ Successfully injected file "${filename}"`);
+    return true;
+  } catch (err) {
+    console.error('❌ File injection failed:', err);
+    return false;
+  }
+}
+
+/**
+ * Scrape current DOM values of all inputs for validation.
+ */
+function scrapeCurrentValues(): Record<string, string> {
+  const current: Record<string, string> = {};
+  const inputs = document.querySelectorAll('input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="checkbox"]):not([type="radio"]), textarea, select');
+  inputs.forEach((el, index) => {
+    const htmlEl = el as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
+    const id = htmlEl.id || `field-index-${index}`;
+    current[id] = htmlEl.value || '';
+  });
+  return current;
+}
+
+/**
+ * Detect form pagination (multi-page/wizard style forms).
+ */
+function detectFormPagination(): { isMultiPage: boolean; currentPage: number } {
+  const paginationEl = document.querySelector(
+    '[class*="step"], [class*="page-indicator"], [aria-label*="step"], [class*="wizard"], [class*="progress"]'
+  );
+  const nextBtn = document.querySelector(
+    'button[data-next], button[class*="next" i], button[id*="next" i], input[type="button"][value*="Next" i]'
+  );
+
+  let currentPage = 1;
+  const match = document.body.innerText.match(/\b(?:step|page)\s*(\d+)\b/i);
+  if (match) {
+    currentPage = parseInt(match[1], 10);
+  }
+
+  return {
+    isMultiPage: !!paginationEl || !!nextBtn,
+    currentPage,
+  };
+}
+
+/**
+ * Observe DOM mutations to auto-detect confirmation of application submission.
+ */
+function startConfirmationObserver(jobId: string) {
+  console.log('👀 Starting submission confirmation observer...');
+  const observer = new MutationObserver(() => {
+    const confirmationSignals = [
+      'application submitted', 'thank you for applying',
+      'we received your application', 'application complete',
+      'success!', 'applied successfully', 'application received',
+      'your application was sent', 'thank you for your interest'
+    ];
+    const pageText = document.body.innerText.toLowerCase();
+    if (confirmationSignals.some((s) => pageText.includes(s))) {
+      console.log('🎉 Application confirmation detected! Notifying background...');
+      chrome.runtime.sendMessage({
+        action: 'application_confirmed',
+        jobId: jobId,
+      });
+      observer.disconnect();
+    }
+  });
+  observer.observe(document.body, { childList: true, subtree: true });
+}
+
+// ── Listener for Sidebar communication ────────────────────────────────────────
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.action === 'scrape_form') {
     try {
       const fields = scrapeForm();
-      console.log('Scraped fields:', fields);
-      sendResponse({ success: true, fields });
+      const pagination = detectFormPagination();
+      console.log('Scraped fields:', fields, 'Pagination:', pagination);
+      sendResponse({ success: true, fields, pagination });
     } catch (err) {
       console.error('Extraction failed', err);
       sendResponse({ success: false, error: (err as Error).message });
@@ -178,17 +279,22 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     try {
       const answers: Record<string, string> = message.answers;
       console.log('Injecting answers into DOM...', answers);
-      
+
+      if (message.jobId) {
+        startConfirmationObserver(message.jobId);
+      }
+
       let count = 0;
-      // Find elements and inject
       const inputs = document.querySelectorAll('input:not([type="hidden"]), textarea, select');
+      
       inputs.forEach((el, index) => {
         const htmlEl = el as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
         const id = htmlEl.id || `field-index-${index}`;
-        
-        if (answers[id] !== undefined) {
+
+        // 1. Text/Select field injection
+        if (answers[id] !== undefined && htmlEl.type !== 'file') {
           injectReactField(htmlEl, answers[id]);
-          
+
           // Visual highlight (brief yellow flash to indicate autofilled)
           const originalBorder = htmlEl.style.borderColor;
           htmlEl.style.borderColor = '#eab308'; // Tailwind yellow-500
@@ -200,9 +306,34 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
           count++;
         }
+
+        // 2. File input injection (for resumes/cover letters)
+        if (htmlEl.type === 'file' && message.tailoredResumeUrl) {
+          const filename = `Rishav_Sharma_Resume_${message.companyName || 'Job'}.pdf`;
+          injectFile(htmlEl as HTMLInputElement, message.tailoredResumeUrl, filename)
+            .then((ok) => {
+              if (ok) {
+                htmlEl.style.outline = '2px solid #22c55e'; // Tailwind green-500
+                setTimeout(() => { htmlEl.style.outline = ''; }, 2000);
+              }
+            });
+        }
       });
 
-      sendResponse({ success: true, count });
+      // Post-injection verification after DOM updates compile (300ms)
+      setTimeout(() => {
+        const current = scrapeCurrentValues();
+        const failedFields = Object.entries(answers)
+          .filter(([id, val]) => current[id] !== val)
+          .map(([id]) => id);
+
+        sendResponse({
+          success: true,
+          count: count - failedFields.length,
+          failedFields,
+        });
+      }, 300);
+
     } catch (err) {
       console.error('Injection failed', err);
       sendResponse({ success: false, error: (err as Error).message });

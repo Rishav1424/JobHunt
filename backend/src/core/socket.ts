@@ -1,11 +1,16 @@
 import { Server, Socket } from 'socket.io';
-import { logger } from './logger';
+import { logger, setLogCallback } from './logger';
 import { AutofillGraphExecutor } from '../services/ai-engine/autofillGraph';
 
 let io: Server | null = null;
 
 export function setupSocket(server: Server): void {
   io = server;
+
+  // Stream backend logs in real-time to frontend
+  setLogCallback((log) => {
+    io?.emit('system:log', log);
+  });
 
   server.on('connection', (socket: Socket) => {
     logger.debug(`Socket connected: ${socket.id}`);
@@ -75,6 +80,14 @@ export function emitApplyPause(jobId: string, question: string, fieldName: strin
 
 export function emitApplyComplete(jobId: string, success: boolean, screenshotPath?: string): void {
   io?.to(`job:${jobId}`).emit('apply:complete', { success, screenshotPath });
+}
+
+export function emitScrapingStatus(status: 'idle' | 'running' | 'completed' | 'failed', data?: any): void {
+  io?.emit('scraping:status', { status, ...data, timestamp: Date.now() });
+}
+
+export function emitScoringStatus(status: 'idle' | 'running' | 'completed' | 'failed', data?: any): void {
+  io?.emit('scoring:status', { status, ...data, timestamp: Date.now() });
 }
 
 export interface ApplyProgressEvent {

@@ -6,6 +6,10 @@ import { Prisma } from '@prisma/client';
 async function requeue() {
   logger.info('🚀 Resetting and requeuing scored jobs for scoring...');
 
+  // Drain existing scoring queue first
+  logger.info('Draining scoring queue...');
+  await scoringQueue.drain();
+
   // Find all jobs that are currently SCORED (meaning they were scored previously)
   const jobsToRequeue = await prisma.job.findMany({
     where: {

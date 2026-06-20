@@ -17,7 +17,13 @@ const CANDIDATE_PATHS = [
   path.resolve(__dirname, '../../BaseResume.latex'),                 // fallback
 ];
 
-const BASE_RESUME_PATH = CANDIDATE_PATHS.find(fs.existsSync) || '';
+const BASE_RESUME_PATH = CANDIDATE_PATHS.find((p) => {
+  try {
+    return fs.existsSync(p) && fs.statSync(p).size > 0;
+  } catch {
+    return false;
+  }
+}) || '';
 const baseResumeLatex = BASE_RESUME_PATH
   ? fs.readFileSync(BASE_RESUME_PATH, 'utf-8')
   : '% Resume not found — please add BaseResume.latex';
@@ -107,7 +113,7 @@ Return a JSON array of objects with the fields: category, title, and content.
       for (const chunk of parsedChunks) {
         logger.info(`   Generating embedding for: ${chunk.title || chunk.category}...`);
         const embedding = await generateEmbedding(chunk.content);
-        await prisma.knowledgeChunk.create({
+        const record = await prisma.knowledgeChunk.create({
           data: {
             category: chunk.category,
             title: chunk.title,
@@ -115,6 +121,14 @@ Return a JSON array of objects with the fields: category, title, and content.
             embedding,
           },
         });
+
+        // Sync pgvector column
+        const vectorStr = `[${embedding.join(',')}]`;
+        await prisma.$executeRawUnsafe(
+          'UPDATE "KnowledgeChunk" SET embedding_vec = cast($1 as vector) WHERE id = $2',
+          vectorStr,
+          record.id
+        );
       }
       logger.info('✅ KnowledgeChunks seeded successfully!');
     } catch (err) {
@@ -206,9 +220,18 @@ Return a JSON array of objects with the fields: category, title, and content.
   };
 
   if (existingSettings) {
+    // Skip company list updates when a Settings row already exists
+    const {
+      blacklistedCompanies,
+      targetCompanies,
+      mncCompanies,
+      tier1Startups,
+      serviceCompanies,
+      ...otherSettings
+    } = settingsData;
     await prisma.settings.update({
       where: { id: existingSettings.id },
-      data: settingsData,
+      data: otherSettings,
     });
   } else {
     await prisma.settings.create({ data: settingsData });

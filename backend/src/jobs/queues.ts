@@ -1,10 +1,10 @@
 import { Queue, Worker, Job } from 'bullmq';
 import { config } from '../core/config';
 import { runAllScrapers } from '../services/scrapers/index';
-import { scoreJob, ensureProfileEmbedding } from '../services/ai-engine/scorer';
+import { scoreJob, scoreJobsBatch, ensureProfileEmbedding } from '../services/ai-engine/scorer';
 import { prisma } from '../core/prisma';
 import { logger } from '../core/logger';
-import { emitJobScored, emitNewJobs } from '../core/socket';
+import { emitJobScored, emitNewJobs, emitScrapingStatus, emitScoringStatus } from '../core/socket';
 
 // BullMQ connection config — use URL string to avoid ioredis version conflicts
 const bullConnection = { url: config.REDIS_URL };
@@ -13,6 +13,7 @@ const bullConnection = { url: config.REDIS_URL };
 export const QUEUE_NAMES = {
   SCRAPING: 'job-scraping',
   SCORING: 'job-scoring',
+  RESUME: 'resume-compilation',
 } as const;
 
 // ─── Queues ───────────────────────────────────────────────────────────────────
@@ -33,6 +34,16 @@ export const scoringQueue = new Queue(QUEUE_NAMES.SCORING, {
     removeOnFail: 50,
     attempts: 4,
     backoff: { type: 'exponential', delay: 5000 },
+  },
+});
+
+export const resumeQueue = new Queue(QUEUE_NAMES.RESUME, {
+  connection: bullConnection,
+  defaultJobOptions: {
+    removeOnComplete: 10,
+    removeOnFail: 10,
+    attempts: 2,
+    backoff: { type: 'exponential', delay: 10000 },
   },
 });
 
@@ -77,45 +88,54 @@ export async function recoverStuckJobs(): Promise<void> {
 export function createScrapingWorker(): Worker {
   return new Worker(
     QUEUE_NAMES.SCRAPING,
-    async (_job: Job) => {
-      logger.info('🔍 Starting job scraping run...');
+    async (job: Job<{ targetScraperName?: string }>) => {
+      const { targetScraperName } = job.data;
+      emitScrapingStatus('running', { targetScraperName });
+      
+      try {
+        logger.info(`🔍 Starting job scraping run...${targetScraperName ? ` for ${targetScraperName}` : ''}`);
 
-      // Ensure profile embedding is ready before scoring
-      await ensureProfileEmbedding();
+        // Ensure profile embedding is ready before scoring
+        await ensureProfileEmbedding();
 
-      const { total, newJobs, scraperResults } = await runAllScrapers();
-      logger.info(`Scraping complete: ${total} fetched, ${newJobs} new jobs`, { scraperResults });
+        const { total, newJobs, scraperResults } = await runAllScrapers(targetScraperName);
+        logger.info(`Scraping complete: ${total} fetched, ${newJobs} new jobs`, { scraperResults });
 
-      if (newJobs > 0) {
-        emitNewJobs(newJobs);
+        if (newJobs > 0) {
+          emitNewJobs(newJobs);
+        }
 
-        // Enqueue scoring for all NEW jobs
-        const newJobRecords = await prisma.job.findMany({
-          where: { status: 'NEW' },
-          select: { id: true },
-        });
+        // Enqueue scoring for all NEW jobs atomically in batches of 3
+        const result = await prisma.$queryRaw<{ id: string }[]>`
+          UPDATE "Job"
+          SET status = 'SCORING', "updatedAt" = NOW()
+          WHERE status = 'NEW'
+          RETURNING id
+        `;
+        const ids = result.map((r) => r.id);
 
-        if (newJobRecords.length > 0) {
-          const ids = newJobRecords.map((j) => j.id);
-          
-          // Mark as SCORING atomically for these specific jobs only
-          await prisma.job.updateMany({
-            where: { id: { in: ids } },
-            data: { status: 'SCORING' },
-          });
+        if (ids.length > 0) {
+          const chunks: string[][] = [];
+          for (let i = 0; i < ids.length; i += 3) {
+            chunks.push(ids.slice(i, i + 3));
+          }
 
-          const scoringJobs = newJobRecords.map((j) => ({
-            name: 'score-job',
-            data: { jobId: j.id },
+          const scoringJobs = chunks.map((chunkIds) => ({
+            name: 'score-job-batch',
+            data: { jobIds: chunkIds },
             opts: { priority: 1 },
           }));
 
           await scoringQueue.addBulk(scoringJobs);
-          logger.info(`Enqueued ${scoringJobs.length} scoring jobs`);
+          logger.info(`Enqueued ${scoringJobs.length} scoring job batches (total ${ids.length} jobs)`);
         }
-      }
 
-      return { total, newJobs, scraperResults };
+        emitScrapingStatus('completed', { total, newJobs, scraperResults, targetScraperName });
+        return { total, newJobs, scraperResults };
+      } catch (err: any) {
+        emitScrapingStatus('failed', { error: err.message, targetScraperName });
+        throw err;
+      }
     },
     { connection: bullConnection, concurrency: 1 }
   );
@@ -124,20 +144,37 @@ export function createScrapingWorker(): Worker {
 export function createScoringWorker(): Worker {
   return new Worker(
     QUEUE_NAMES.SCORING,
-    async (job: Job<{ jobId: string }>) => {
-      const { jobId } = job.data;
-      logger.info(`Scoring job ${jobId}...`);
+    async (job: Job<{ jobId?: string; jobIds?: string[] }>) => {
+      const { jobId, jobIds } = job.data;
+      const idsToScore = jobIds && jobIds.length > 0 ? jobIds : jobId ? [jobId] : [];
 
-      const analysis = await scoreJob(jobId);
-
-      if (analysis) {
-        emitJobScored(jobId, analysis.score, analysis);
-        logger.info(`✅ Scoring job ${job.id} completed (score: ${analysis.score})`);
-      } else {
-        logger.warn(`Scoring returned null for job ${jobId} — may have been pre-screened`);
+      if (idsToScore.length === 0) {
+        logger.warn('Scoring job had no job IDs');
+        emitScoringStatus('idle');
+        return { count: 0 };
       }
 
-      return { jobId, score: analysis?.score };
+      emitScoringStatus('running', { count: idsToScore.length, jobIds: idsToScore });
+
+      try {
+        logger.info(`Scoring jobs batch of ${idsToScore.length}: ${idsToScore.join(', ')}...`);
+
+        // Call scoreJobsBatch from scorer
+        const results = await scoreJobsBatch(idsToScore);
+
+        for (const res of results) {
+          if (res.analysis) {
+            emitJobScored(res.jobId, res.analysis.score, res.analysis);
+          }
+        }
+
+        logger.info(`✅ Batch scoring completed for ${results.length} jobs`);
+        emitScoringStatus('completed', { count: results.length, jobIds: idsToScore });
+        return { count: results.length };
+      } catch (err: any) {
+        emitScoringStatus('failed', { error: err.message, jobIds: idsToScore });
+        throw err;
+      }
     },
     {
       connection: bullConnection,
@@ -146,14 +183,38 @@ export function createScoringWorker(): Worker {
   );
 }
 
+export function createResumeWorker(): Worker {
+  return new Worker(
+    QUEUE_NAMES.RESUME,
+    async (job: Job<{ jobId: string }>) => {
+      const { jobId } = job.data;
+      logger.info(`Tailoring resume in background for job ${jobId}...`);
+      const { compileTailoredResume } = require('../services/ai-engine/resumeCompiler');
+      try {
+        await compileTailoredResume(jobId);
+        logger.info(`✅ Tailored resume background compilation completed for job ${jobId}`);
+      } catch (err) {
+        logger.error(`❌ Background resume compilation failed for job ${jobId}`, { error: err });
+      }
+      return { jobId };
+    },
+    { connection: bullConnection, concurrency: 1 }
+  );
+}
+
 // ─── Graceful Shutdown ────────────────────────────────────────────────────────
-export function setupGracefulShutdown(scrapingWorker: Worker, scoringWorker: Worker): void {
+export function setupGracefulShutdown(
+  scrapingWorker: Worker,
+  scoringWorker: Worker,
+  resumeWorker: Worker
+): void {
   const shutdown = async (signal: string) => {
     logger.info(`Received ${signal} — gracefully shutting down workers...`);
     try {
       await Promise.all([
         scrapingWorker.close(),
         scoringWorker.close(),
+        resumeWorker.close(),
       ]);
       logger.info('Workers closed cleanly');
       process.exit(0);
@@ -168,12 +229,12 @@ export function setupGracefulShutdown(scrapingWorker: Worker, scoringWorker: Wor
 }
 
 // ─── Manual Triggers (called from API) ───────────────────────────────────────
-export async function triggerManualScrape(): Promise<void> {
-  await scrapingQueue.add('manual-scrape', {}, {
+export async function triggerManualScrape(targetScraperName?: string): Promise<void> {
+  await scrapingQueue.add('manual-scrape', { targetScraperName }, {
     priority: 1,
-    jobId: `manual-${Date.now()}`,
+    jobId: `manual-${targetScraperName || 'all'}-${Date.now()}`,
   });
-  logger.info('Manual scrape triggered');
+  logger.info(`Manual scrape triggered${targetScraperName ? ` for ${targetScraperName}` : ''}`);
 }
 
 export async function triggerJobScore(jobId: string): Promise<void> {

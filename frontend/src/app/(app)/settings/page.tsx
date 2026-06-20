@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { settingsApi } from '@/lib/api';
-import { Save, Plus, X, RefreshCw, User, Settings as SettingsIcon, Wand2 } from 'lucide-react';
+import { Save, Plus, X, RefreshCw, User, Settings as SettingsIcon, Wand2, Play } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -12,7 +12,10 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Slider } from '@/components/ui/slider';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Progress } from '@/components/ui/progress';
 import Editor from '@monaco-editor/react';
+import { toast } from 'sonner';
+import { ScrollArea } from '@/components/ui/scroll-area';
 
 interface Settings {
   minSalaryLpa: number;
@@ -50,6 +53,34 @@ export default function SettingsPage() {
   const [newRole, setNewRole] = useState('');
   const [newSkill, setNewSkill] = useState('');
 
+  // Simulator States
+  const [simTitle, setSimTitle] = useState('');
+  const [simCompany, setSimCompany] = useState('');
+  const [simDescription, setSimDescription] = useState('');
+  const [simResult, setSimResult] = useState<any>(null);
+  const [simulating, setSimulating] = useState(false);
+
+  const handleSimulate = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!simTitle || !simDescription) return;
+    setSimulating(true);
+    setSimResult(null);
+    try {
+      const res = await settingsApi.simulateScore({
+        title: simTitle,
+        company: simCompany,
+        description: simDescription
+      });
+      setSimResult(res);
+      toast.success('Simulation scoring completed successfully!');
+    } catch (err) {
+      console.error('Simulation failed', err);
+      toast.error('Simulation failed. Check backend logs.');
+    } finally {
+      setSimulating(false);
+    }
+  };
+
   useEffect(() => {
     Promise.all([
       settingsApi.get(),
@@ -69,9 +100,11 @@ export default function SettingsPage() {
     try {
       await settingsApi.update(settings as unknown as Record<string, unknown>);
       setSavedSettings(true);
+      toast.success('Scraper configuration saved successfully!');
       setTimeout(() => setSavedSettings(false), 2000);
     } catch (err) {
       console.error('Failed to save settings', err);
+      toast.error('Failed to save scraper configuration.');
     } finally {
       setSavingSettings(false);
     }
@@ -83,9 +116,11 @@ export default function SettingsPage() {
     try {
       await settingsApi.updateProfile(profile as unknown as Record<string, unknown>);
       setSavedProfile(true);
+      toast.success('Profile and resume saved successfully! Recomputing embeddings in the background...');
       setTimeout(() => setSavedProfile(false), 2000);
     } catch (err) {
       console.error('Failed to save profile', err);
+      toast.error('Failed to save candidate profile.');
     } finally {
       setSavingProfile(false);
     }
@@ -108,12 +143,15 @@ export default function SettingsPage() {
       </div>
 
       <Tabs defaultValue="scraper" className="w-full">
-        <TabsList className="w-full sm:w-[400px]">
-          <TabsTrigger value="scraper" className="flex items-center gap-1.5">
+        <TabsList className="w-full sm:w-[550px]">
+          <TabsTrigger value="scraper" className="flex items-center gap-1.5 cursor-pointer">
             <SettingsIcon className="w-3.5 h-3.5" /> Scraper Config
           </TabsTrigger>
-          <TabsTrigger value="profile" className="flex items-center gap-1.5">
+          <TabsTrigger value="profile" className="flex items-center gap-1.5 cursor-pointer">
             <User className="w-3.5 h-3.5" /> Candidate Profile
+          </TabsTrigger>
+          <TabsTrigger value="simulator" className="flex items-center gap-1.5 cursor-pointer">
+            <Wand2 className="w-3.5 h-3.5" /> Scoring Simulator
           </TabsTrigger>
         </TabsList>
 
@@ -164,7 +202,7 @@ export default function SettingsPage() {
                   <Switch
                     id="remoteOnly"
                     checked={settings.remoteOnly}
-                    onCheckedChange={(checked) => setSettings({ ...settings, remoteOnly: checked })}
+                    onCheckedChange={(checked: any) => setSettings({ ...settings, remoteOnly: checked })}
                   />
                   <Label htmlFor="remoteOnly" className="cursor-pointer">Restrict to Remote Only</Label>
                 </div>
@@ -228,7 +266,7 @@ export default function SettingsPage() {
                     <Checkbox
                       id={`source-${source}`}
                       checked={settings.enabledSources[source] ?? true}
-                      onCheckedChange={(checked) => setSettings({
+                      onCheckedChange={(checked: any) => setSettings({
                         ...settings,
                         enabledSources: { ...settings.enabledSources, [source]: !!checked },
                       })}
@@ -254,7 +292,7 @@ export default function SettingsPage() {
                   <Slider
                     min={1} max={24} step={1}
                     value={[settings.scrapeIntervalHours]}
-                    onValueChange={(val) => setSettings({ ...settings, scrapeIntervalHours: Array.isArray(val) ? val[0] : val })}
+                    onValueChange={(val: number | number[]) => setSettings({ ...settings, scrapeIntervalHours: Array.isArray(val) ? val[0] : val })}
                   />
                   <div className="flex justify-between text-[10px] text-muted-foreground">
                     <span>1h</span><span>6h</span><span>12h</span><span>24h</span>
@@ -370,16 +408,18 @@ export default function SettingsPage() {
                   <CardDescription>Skills list referenced by AI filters.</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                  <div className="flex flex-wrap gap-1.5 border bg-muted/50 p-3 rounded-lg max-h-32 overflow-y-auto">
-                    {profile.skills.map((skill) => (
-                      <Badge key={skill} variant="secondary" className="gap-1">
-                        {skill}
-                        <button onClick={() => setProfile({ ...profile, skills: profile.skills.filter((s) => s !== skill) })} className="hover:text-destructive cursor-pointer">
-                          <X className="w-3 h-3" />
-                        </button>
-                      </Badge>
-                    ))}
-                  </div>
+                  <ScrollArea className="max-h-32">
+                    <div className="flex flex-wrap gap-1.5 border bg-muted/50 p-3 rounded-lg mr-2">
+                      {profile.skills.map((skill) => (
+                        <Badge key={skill} variant="secondary" className="gap-1">
+                          {skill}
+                          <button onClick={() => setProfile({ ...profile, skills: profile.skills.filter((s) => s !== skill) })} className="hover:text-destructive cursor-pointer">
+                            <X className="w-3 h-3" />
+                          </button>
+                        </Badge>
+                      ))}
+                    </div>
+                  </ScrollArea>
                   <div className="flex gap-2">
                     <Input
                       value={newSkill}
@@ -437,6 +477,154 @@ export default function SettingsPage() {
                     scrollbar: { verticalScrollbarSize: 6, horizontalScrollbarSize: 6 }
                   }}
                 />
+              </CardContent>
+            </Card>
+          </div>
+        </TabsContent>
+
+        {/* Tab 3: Simulator settings */}
+        <TabsContent value="simulator" className="mt-4 space-y-6">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* Input Form */}
+            <Card className="border border-border bg-card/40 backdrop-blur-md">
+              <CardHeader>
+                <CardTitle className="text-sm font-semibold">Simulate Scoring Criteria</CardTitle>
+                <CardDescription>Paste job details to run our scoring algorithms and preview the RAG and Gemini assessment.</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <form onSubmit={handleSimulate} className="space-y-4">
+                  <div className="space-y-1.5">
+                    <Label htmlFor="simTitle" className="text-xs">Job Title</Label>
+                    <Input
+                      id="simTitle"
+                      placeholder="e.g. Backend SDE-II"
+                      value={simTitle}
+                      onChange={(e) => setSimTitle(e.target.value)}
+                      className="bg-background border-border text-xs rounded-lg"
+                      required
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="simCompany" className="text-xs">Company Name (Optional)</Label>
+                    <Input
+                      id="simCompany"
+                      placeholder="e.g. Google"
+                      value={simCompany}
+                      onChange={(e) => setSimCompany(e.target.value)}
+                      className="bg-background border-border text-xs rounded-lg"
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="simDescription" className="text-xs">Job Description (Text)</Label>
+                    <textarea
+                      id="simDescription"
+                      placeholder="Paste the full job requirements and details here..."
+                      value={simDescription}
+                      onChange={(e) => setSimDescription(e.target.value)}
+                      className="w-full bg-background border border-border rounded-lg p-2.5 h-44 text-xs placeholder-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                      required
+                    />
+                  </div>
+                  <Button
+                    type="submit"
+                    disabled={simulating || !simTitle || !simDescription}
+                    className="w-full bg-primary hover:bg-primary/90 text-primary-foreground rounded-lg text-xs font-semibold cursor-pointer h-10 flex items-center justify-center gap-1.5"
+                  >
+                    {simulating ? (
+                      <>
+                        <RefreshCw className="h-4 w-4 animate-spin" />
+                        Running Simulation...
+                      </>
+                    ) : (
+                      <>
+                        <Play className="h-4 w-4" />
+                        Simulate Scoring
+                      </>
+                    )}
+                  </Button>
+                </form>
+              </CardContent>
+            </Card>
+
+            {/* Simulation Results Output */}
+            <Card className="border border-border bg-card/40 backdrop-blur-md min-h-[350px]">
+              <CardHeader>
+                <CardTitle className="text-sm font-semibold">Simulation Report</CardTitle>
+                <CardDescription>Live results compiled using local pgvector similarity searches and LLM scoring modules.</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-6">
+                {!simResult ? (
+                  <div className="flex flex-col items-center justify-center py-20 text-center border border-dashed border-border rounded-lg h-full">
+                    <Wand2 className="h-10 w-10 text-muted-foreground/60 mb-3" />
+                    <p className="text-xs text-muted-foreground">Submit the form on the left to see the simulation score report.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-6">
+                    {/* Score header */}
+                    <div className="flex items-center justify-between pb-4 border-b border-border">
+                      <div>
+                        <h3 className="text-base font-bold text-foreground">{simResult.title || simTitle}</h3>
+                        <p className="text-xs text-primary font-medium uppercase tracking-wider">{simResult.company || simCompany || 'Simulation Corp'}</p>
+                      </div>
+                      <Badge className={`text-sm font-extrabold h-12 w-12 rounded-full flex items-center justify-center ${simResult.score >= 80
+                        ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                        : simResult.score >= 60
+                          ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                          : 'bg-red-500/10 text-red-400 border border-red-500/20'
+                        }`}>
+                        {simResult.score}%
+                      </Badge>
+                    </div>
+
+                    {/* Verdict */}
+                    <div className="space-y-1.5">
+                      <span className="text-[10px] text-muted-foreground uppercase tracking-widest font-bold">Fit Verdict</span>
+                      <p className="text-xs text-muted-foreground italic">"{simResult.verdict || simResult.recommendation}"</p>
+                    </div>
+
+                    {/* Dimension Breakdown */}
+                    {simResult.dimensions && (
+                      <div className="space-y-3">
+                        <span className="text-[10px] text-muted-foreground uppercase tracking-widest font-bold">Dimension Score breakdown</span>
+                        <div className="space-y-2">
+                          {Object.entries(simResult.dimensions).map(([key, val]: any) => (
+                            <div key={key} className="space-y-1">
+                              <div className="flex justify-between text-[11px]">
+                                <span className="capitalize text-muted-foreground">{key.replace(/([A-Z])/g, ' $1')}</span>
+                                <span className="font-bold text-foreground">{val}%</span>
+                              </div>
+                              <Progress value={val} className="h-1 bg-muted" />
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Strengths & Gaps */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      {simResult.strengths && simResult.strengths.length > 0 && (
+                        <div className="space-y-1.5">
+                          <span className="text-[10px] text-emerald-400 uppercase tracking-widest font-bold">Strengths Matches</span>
+                          <ul className="text-[11px] text-muted-foreground list-disc pl-4 space-y-1">
+                            {simResult.strengths.slice(0, 4).map((s: string) => (
+                              <li key={s}>{s}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                      {simResult.gaps && simResult.gaps.length > 0 && (
+                        <div className="space-y-1.5">
+                          <span className="text-[10px] text-amber-400 uppercase tracking-widest font-bold">Profile Gaps</span>
+                          <ul className="text-[11px] text-muted-foreground list-disc pl-4 space-y-1">
+                            {simResult.gaps.slice(0, 4).map((g: string) => (
+                              <li key={g}>{g}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
               </CardContent>
             </Card>
           </div>

@@ -10,7 +10,8 @@ import Link from 'next/link';
 import { clsx } from 'clsx';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Progress, ProgressTrack, ProgressIndicator, ProgressLabel, ProgressValue } from '@/components/ui/progress';
+import { Button } from '@/components/ui/button';
+import { ScrollArea } from '@/components/ui/scroll-area';
 
 export default function JobDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
@@ -85,17 +86,17 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
   return (
     <div className="p-6 max-w-6xl mx-auto space-y-6">
       {/* Back */}
-      <Link href="/jobs" className="flex items-center gap-2 text-sm text-gray-400 hover:text-white transition-colors w-fit">
+      <Link href="/jobs" className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors w-fit">
         <ArrowLeft className="w-4 h-4" /> Back to Job Queue
       </Link>
 
       {/* Job Header Card */}
-      <Card className="border-gray-800 bg-gray-950/40 backdrop-blur-md">
+      <Card className="border-border bg-card/40 backdrop-blur-md">
         <CardContent className="p-6">
           <div className="flex flex-col md:flex-row md:items-start justify-between gap-6">
             <div className="flex-1 min-w-0">
               <div className="flex items-center flex-wrap gap-3 mb-2">
-                <h1 className="text-2xl font-bold text-white tracking-tight leading-none">{job.title}</h1>
+                <h1 className="text-2xl font-bold text-foreground tracking-tight leading-none">{job.title}</h1>
                 {job.fitScore !== undefined && (
                   <div className={`badge-score ${scoreClass} text-sm`}>{job.fitScore}% Match</div>
                 )}
@@ -105,12 +106,12 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
                   </span>
                 )}
               </div>
-              <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-gray-400">
-                <span className="flex items-center gap-1.5 font-medium text-gray-300">
-                  <Building2 className="w-4 h-4 text-gray-500" /> {job.company}
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-muted-foreground">
+                <span className="flex items-center gap-1.5 font-medium text-foreground">
+                  <Building2 className="w-4 h-4 text-muted-foreground" /> {job.company}
                 </span>
                 <span className="flex items-center gap-1.5">
-                  <MapPin className="w-4 h-4 text-gray-500" /> {job.isRemote ? 'Remote' : job.location}
+                  <MapPin className="w-4 h-4 text-muted-foreground" /> {job.isRemote ? 'Remote' : job.location}
                 </span>
                 {job.salaryRaw && (
                   <span className="flex items-center gap-1.5 text-emerald-400 font-semibold">
@@ -126,20 +127,20 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
                 href={job.url}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold border border-gray-800 text-gray-300 hover:border-gray-700 hover:text-white rounded-lg transition-all"
+                className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold border border-border text-foreground hover:bg-muted rounded-lg transition-all"
               >
                 <ExternalLink className="w-3.5 h-3.5" /> View Listing
               </a>
               {job.status === 'SCORED' && (
-                <button
+                <Button
                   onClick={handleApprove}
-                  className="flex items-center gap-1.5 px-4 py-2 text-xs bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-bold shadow-lg shadow-blue-600/10 active:scale-95 transition-all"
+                  className="flex items-center gap-1.5 px-4 py-2 text-xs h-8 cursor-pointer font-bold"
                 >
                   <CheckCircle className="w-3.5 h-3.5" /> Approve Role
-                </button>
+                </Button>
               )}
               {job.status === 'APPROVED' && (
-                <span className="px-3 py-1.5 bg-blue-600/15 border border-blue-600/30 text-blue-400 text-xs font-bold rounded-lg flex items-center gap-1.5">
+                <span className="px-3 py-1.5 bg-primary/10 border border-primary/20 text-primary text-xs font-bold rounded-lg flex items-center gap-1.5">
                   <CheckCircle className="w-3.5 h-3.5" /> Approved
                 </span>
               )}
@@ -151,35 +152,39 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
       {/* Main Grid: Description vs AI Tools */}
       <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
         {/* Left: Job Description Card */}
-        <Card className="lg:col-span-2 border-gray-800 bg-gray-950/40 backdrop-blur-md flex flex-col max-h-[600px]">
-          <CardHeader className="border-b border-gray-900 pb-3">
-            <CardTitle className="text-sm font-semibold text-gray-300">Job Description</CardTitle>
+        <Card className="lg:col-span-2 border-border bg-card/40 backdrop-blur-md flex flex-col max-h-[600px]">
+          <CardHeader className="border-b border-border pb-3">
+            <CardTitle className="text-sm font-semibold text-foreground">Job Description</CardTitle>
           </CardHeader>
-          <CardContent className="flex-1 overflow-y-auto p-4 text-xs text-gray-400 leading-relaxed whitespace-pre-wrap">
-            {job.description}
+          <CardContent className="flex-1 min-h-0 p-4 flex flex-col">
+            <ScrollArea className="flex-1">
+              <div className="text-xs text-muted-foreground leading-relaxed whitespace-pre-wrap">
+                {job.description}
+              </div>
+            </ScrollArea>
           </CardContent>
         </Card>
 
         {/* Right: AI Tools Tabs */}
         <div className="lg:col-span-3 space-y-4">
-          <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as any)} className="w-full">
-            <TabsList className="grid w-full grid-cols-3 bg-gray-950 border border-gray-800 p-1 rounded-lg">
-              <TabsTrigger value="analysis" className="text-xs font-semibold px-3 py-1.5 rounded-md data-[state=active]:bg-blue-600 data-[state=active]:text-white text-gray-400 hover:text-white transition-all">
+          <Tabs value={activeTab} onValueChange={(v: any) => setActiveTab(v as any)} className="w-full">
+            <TabsList className="grid w-full grid-cols-3 bg-muted border border-border p-0.5 rounded-lg">
+              <TabsTrigger value="analysis" className="text-xs font-semibold px-3 py-1.5 rounded-md data-[state=active]:bg-background data-[state=active]:text-foreground text-muted-foreground hover:text-foreground transition-all">
                 AI Fit Analysis
               </TabsTrigger>
-              <TabsTrigger value="resume" className="text-xs font-semibold px-3 py-1.5 rounded-md data-[state=active]:bg-indigo-600 data-[state=active]:text-white text-gray-400 hover:text-white transition-all">
+              <TabsTrigger value="resume" className="text-xs font-semibold px-3 py-1.5 rounded-md data-[state=active]:bg-background data-[state=active]:text-foreground text-muted-foreground hover:text-foreground transition-all">
                 Tailor Resume
               </TabsTrigger>
-              <TabsTrigger value="cover-letter" className="text-xs font-semibold px-3 py-1.5 rounded-md data-[state=active]:bg-purple-600 data-[state=active]:text-white text-gray-400 hover:text-white transition-all">
+              <TabsTrigger value="cover-letter" className="text-xs font-semibold px-3 py-1.5 rounded-md data-[state=active]:bg-background data-[state=active]:text-foreground text-muted-foreground hover:text-foreground transition-all">
                 Cover Letter
               </TabsTrigger>
             </TabsList>
 
             {/* Analysis Content */}
             <TabsContent value="analysis" className="mt-4 space-y-4">
-              <Card className="border-gray-800 bg-gray-950/40 backdrop-blur-md">
+              <Card className="border-border bg-card/40 backdrop-blur-md">
                 <CardHeader className="pb-2">
-                  <div className="flex items-center gap-2 text-white">
+                  <div className="flex items-center gap-2 text-foreground">
                     <Star className="w-4 h-4 text-yellow-400 fill-yellow-400" />
                     <span className="text-sm font-bold">{analysis?.verdict || 'Match Scored'}</span>
                   </div>
@@ -187,12 +192,12 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
                 <CardContent className="space-y-4 pt-2">
                   {/* Score Caps Warnings / Red Flags */}
                   {analysis?.redFlags && analysis.redFlags.length > 0 && (
-                    <div className="bg-red-500/10 border border-red-500/20 text-red-400 p-3.5 rounded-xl space-y-1">
+                    <div className="bg-destructive/10 border border-destructive/20 text-destructive p-3.5 rounded-xl space-y-1">
                       <div className="flex items-center gap-1.5 font-bold text-xs">
-                        <AlertTriangle className="w-4 h-4 shrink-0 text-red-400" />
+                        <AlertTriangle className="w-4 h-4 shrink-0 text-destructive" />
                         POTENTIAL RED FLAGS DETECTED (Score capped at 60)
                       </div>
-                      <ul className="list-disc list-inside text-[11px] text-red-400/90 pl-1 space-y-0.5">
+                      <ul className="list-disc list-inside text-[11px] text-destructive/90 pl-1 space-y-0.5">
                         {analysis.redFlags.map((flag: string, i: number) => (
                           <li key={i}>{flag}</li>
                         ))}
@@ -202,24 +207,24 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
 
                   {/* Multi-Dimensional Breakdown */}
                   {analysis?.dimensions && (
-                    <div className="bg-gray-950/60 p-4 border border-gray-900 rounded-xl space-y-3">
-                      <h3 className="text-xs font-bold text-gray-300 uppercase tracking-wider">Scoring Breakdown</h3>
+                    <div className="bg-muted/60 p-4 border border-border rounded-xl space-y-3">
+                      <h3 className="text-xs font-bold text-foreground uppercase tracking-wider">Scoring Breakdown</h3>
                       <div className="space-y-2.5">
                         {Object.entries(analysis.dimensions).map(([dim, score]) => (
                           <div key={dim} className="space-y-1">
                             <div className="flex justify-between text-[11px] font-semibold">
-                              <span className="text-gray-400">{dimensionLabels[dim] || dim}</span>
+                              <span className="text-muted-foreground">{dimensionLabels[dim] || dim}</span>
                               <span className={clsx(
                                 (score as number) >= 75 ? 'text-green-400' :
-                                (score as number) >= 55 ? 'text-yellow-400' : 'text-red-400'
+                                  (score as number) >= 55 ? 'text-yellow-400' : 'text-red-400'
                               )}>{score as number}%</span>
                             </div>
-                            <div className="h-1.5 w-full bg-gray-900 rounded-full overflow-hidden border border-gray-900">
+                            <div className="h-1.5 w-full bg-background rounded-full overflow-hidden border border-border">
                               <div
                                 className={clsx(
                                   'h-full rounded-full transition-all',
                                   (score as number) >= 75 ? 'bg-green-500' :
-                                  (score as number) >= 55 ? 'bg-yellow-500' : 'bg-red-500'
+                                    (score as number) >= 55 ? 'bg-yellow-500' : 'bg-red-500'
                                 )}
                                 style={{ width: `${score}%` }}
                               />
@@ -232,12 +237,12 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
 
                   {/* Domain Relevance */}
                   {analysis?.domainRelevance && (
-                    <div className="bg-gray-950/60 p-4 border border-gray-900 rounded-xl space-y-1">
-                      <div className="flex items-center gap-1.5 text-xs font-bold text-gray-300">
-                        <Info className="w-3.5 h-3.5 text-blue-400" />
+                    <div className="bg-muted/60 p-4 border border-border rounded-xl space-y-1">
+                      <div className="flex items-center gap-1.5 text-xs font-bold text-foreground">
+                        <Info className="w-3.5 h-3.5 text-primary" />
                         DOMAIN RELEVANCE
                       </div>
-                      <p className="text-[11px] text-gray-400 leading-relaxed">
+                      <p className="text-[11px] text-muted-foreground leading-relaxed">
                         {analysis.domainRelevance}
                       </p>
                     </div>
@@ -248,10 +253,10 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
                     {/* Strengths */}
                     {analysis?.strengths && analysis.strengths.length > 0 && (
                       <div className="space-y-2">
-                        <p className="text-xs font-bold uppercase tracking-wider text-gray-400">Core Match Strengths</p>
+                        <p className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Core Match Strengths</p>
                         <ul className="space-y-1.5">
                           {analysis.strengths.map((str: string, i: number) => (
-                            <li key={i} className="flex items-start gap-1.5 text-xs text-green-400">
+                            <li key={i} className="flex items-start gap-1.5 text-xs text-green-450">
                               <CheckCircle className="w-3.5 h-3.5 mt-0.5 shrink-0 text-green-500" />
                               {str}
                             </li>
@@ -263,11 +268,11 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
                     {/* Gaps */}
                     {analysis?.gaps && analysis.gaps.length > 0 && (
                       <div className="space-y-2">
-                        <p className="text-xs font-bold uppercase tracking-wider text-gray-400">Requirements Gaps</p>
+                        <p className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Requirements Gaps</p>
                         <ul className="space-y-1.5">
                           {analysis.gaps.map((gap: string, i: number) => (
-                            <li key={i} className="flex items-start gap-1.5 text-xs text-red-400">
-                              <XCircle className="w-3.5 h-3.5 mt-0.5 shrink-0 text-red-500" />
+                            <li key={i} className="flex items-start gap-1.5 text-xs text-destructive">
+                              <XCircle className="w-3.5 h-3.5 mt-0.5 shrink-0 text-destructive" />
                               {gap}
                             </li>
                           ))}
@@ -277,46 +282,47 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
                   </div>
 
                   {/* Why Apply & Why Skip */}
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 border-t border-gray-900 pt-3">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 border-t border-border pt-3">
                     {analysis?.whyApply && (
                       <div className="space-y-1">
-                        <p className="text-xs font-bold text-gray-300 uppercase tracking-wider">Strongest Case to Apply</p>
-                        <p className="text-xs text-gray-400 leading-relaxed">{analysis.whyApply}</p>
+                        <p className="text-xs font-bold text-foreground uppercase tracking-wider">Strongest Case to Apply</p>
+                        <p className="text-xs text-muted-foreground leading-relaxed">{analysis.whyApply}</p>
                       </div>
                     )}
                     {analysis?.whySkip && (
                       <div className="space-y-1">
-                        <p className="text-xs font-bold text-gray-300 uppercase tracking-wider">Reason to Skip</p>
-                        <p className="text-xs text-gray-400 leading-relaxed">{analysis.whySkip}</p>
+                        <p className="text-xs font-bold text-foreground uppercase tracking-wider">Reason to Skip</p>
+                        <p className="text-xs text-muted-foreground leading-relaxed">{analysis.whySkip}</p>
                       </div>
                     )}
                   </div>
 
                   {/* Recommendation */}
                   {analysis?.recommendation && (
-                    <div className="bg-blue-500/5 border border-blue-500/10 p-3 rounded-lg text-xs text-blue-400 italic font-medium">
+                    <div className="bg-primary/5 border border-primary/10 p-3 rounded-lg text-xs text-primary italic font-medium">
                       {analysis.recommendation}
                     </div>
                   )}
 
                   {/* Tailoring actions */}
-                  <div className="flex gap-3 pt-3 border-t border-gray-900">
-                    <button
+                  <div className="flex gap-3 pt-3 border-t border-border">
+                    <Button
                       onClick={handleTailor}
                       disabled={tailoring}
-                      className="flex items-center gap-2 px-3 py-2 text-xs bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-bold shadow-lg shadow-indigo-600/10 active:scale-95 disabled:opacity-50 transition-all cursor-pointer"
+                      className="cursor-pointer"
                     >
                       {tailoring ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Wand2 className="w-3.5 h-3.5" />}
                       Tailor Resume
-                    </button>
-                    <button
+                    </Button>
+                    <Button
                       onClick={handleGenerateCL}
                       disabled={generatingCL}
-                      className="flex items-center gap-2 px-3 py-2 text-xs bg-purple-600 hover:bg-purple-500 text-white rounded-lg font-bold shadow-lg shadow-purple-600/10 active:scale-95 disabled:opacity-50 transition-all cursor-pointer"
+                      variant="secondary"
+                      className="cursor-pointer"
                     >
                       {generatingCL ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FileText className="w-3.5 h-3.5" />}
                       Generate Cover Letter
-                    </button>
+                    </Button>
                   </div>
                 </CardContent>
               </Card>
@@ -324,19 +330,19 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
 
             {/* Resume Content */}
             <TabsContent value="resume" className="mt-4">
-              <Card className="border-gray-800 bg-gray-950/40 backdrop-blur-md">
+              <Card className="border-border bg-card/40 backdrop-blur-md">
                 <CardContent className="p-5 space-y-4">
                   {application?.tailoredResumeLatex ? (
                     <>
                       <div className="flex items-center justify-between mb-2">
-                        <p className="text-sm font-semibold text-white">Tailored Resume (LaTeX Snippet)</p>
-                        <span className="text-xs text-indigo-400 font-medium">
+                        <p className="text-sm font-semibold text-foreground">Tailored Resume (LaTeX Snippet)</p>
+                        <span className="text-xs text-primary font-medium">
                           {application.changesSummary?.length || 0} changes made
                         </span>
                       </div>
                       {application.changesSummary && (
-                        <div className="bg-gray-950 border border-gray-900 p-3 rounded-lg text-xs space-y-1 text-gray-400">
-                          <p className="font-semibold text-gray-300">Modifications Summary:</p>
+                        <div className="bg-muted border border-border p-3 rounded-lg text-xs space-y-1 text-muted-foreground">
+                          <p className="font-semibold text-foreground">Modifications Summary:</p>
                           <ul className="list-disc list-inside space-y-0.5 pl-1">
                             {application.changesSummary.map((c, i) => (
                               <li key={i}>{c}</li>
@@ -344,33 +350,35 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
                           </ul>
                         </div>
                       )}
-                      <pre className="text-xs text-gray-300 bg-gray-950 p-4 rounded-lg overflow-auto max-h-80 font-mono border border-gray-900 leading-relaxed">
-                        {application.tailoredResumeLatex.slice(0, 1500)}...
-                      </pre>
-                      <button
+                      <ScrollArea className="max-h-80">
+                        <pre className="text-xs text-muted-foreground bg-muted p-4 rounded-lg font-mono border border-border leading-relaxed whitespace-pre-wrap">
+                          {application.tailoredResumeLatex.slice(0, 1500)}...
+                        </pre>
+                      </ScrollArea>
+                      <Button
                         onClick={handleTailor}
                         disabled={tailoring}
-                        className="flex items-center gap-2 px-3 py-2 text-xs bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-bold transition-all disabled:opacity-50 cursor-pointer"
+                        className="cursor-pointer"
                       >
                         {tailoring ? 'Re-Generating...' : 'Re-Tailor Resume'}
-                      </button>
+                      </Button>
                     </>
                   ) : (
-                    <div className="text-center py-12 space-y-4 border border-dashed border-gray-800 rounded-xl">
-                      <Wand2 className="w-8 h-8 text-gray-600 mx-auto" />
+                    <div className="text-center py-12 space-y-4 border border-dashed border-border rounded-xl">
+                      <Wand2 className="w-8 h-8 text-muted-foreground mx-auto" />
                       <div className="space-y-1">
-                        <p className="text-sm font-semibold text-gray-300">No tailored resume yet</p>
-                        <p className="text-xs text-gray-500 max-w-xs mx-auto">
+                        <p className="text-sm font-semibold text-foreground">No tailored resume yet</p>
+                        <p className="text-xs text-muted-foreground max-w-xs mx-auto">
                           Automatically adapt your base LaTeX resume to highlight matching skills and project experiences for this job.
                         </p>
                       </div>
-                      <button
+                      <Button
                         onClick={handleTailor}
                         disabled={tailoring}
-                        className="px-4 py-2 text-xs bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-bold transition-all disabled:opacity-50 cursor-pointer"
+                        className="cursor-pointer"
                       >
                         {tailoring ? 'Generating tailored resume...' : 'Generate Tailored Resume'}
-                      </button>
+                      </Button>
                     </div>
                   )}
                 </CardContent>
@@ -379,38 +387,40 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
 
             {/* Cover Letter Content */}
             <TabsContent value="cover-letter" className="mt-4">
-              <Card className="border-gray-800 bg-gray-950/40 backdrop-blur-md">
+              <Card className="border-border bg-card/40 backdrop-blur-md">
                 <CardContent className="p-5 space-y-4">
                   {application?.coverLetter ? (
                     <>
-                      <p className="text-sm font-semibold text-white mb-2">Generated Cover Letter</p>
-                      <p className="text-xs text-gray-300 leading-relaxed bg-gray-950 p-4 rounded-lg border border-gray-900 whitespace-pre-wrap">
+                      <p className="text-sm font-semibold text-foreground mb-2">Generated Cover Letter</p>
+                      <p className="text-xs text-muted-foreground leading-relaxed bg-muted p-4 rounded-lg border border-border whitespace-pre-wrap">
                         {application.coverLetter}
                       </p>
-                      <button
+                      <Button
                         onClick={handleGenerateCL}
                         disabled={generatingCL}
-                        className="flex items-center gap-2 px-3 py-2 text-xs bg-purple-600 hover:bg-purple-500 text-white rounded-lg font-bold transition-all disabled:opacity-50 cursor-pointer"
+                        variant="secondary"
+                        className="cursor-pointer"
                       >
                         {generatingCL ? 'Re-Generating...' : 'Re-Generate Cover Letter'}
-                      </button>
+                      </Button>
                     </>
                   ) : (
-                    <div className="text-center py-12 space-y-4 border border-dashed border-gray-800 rounded-xl">
-                      <FileText className="w-8 h-8 text-gray-600 mx-auto" />
+                    <div className="text-center py-12 space-y-4 border border-dashed border-border rounded-xl">
+                      <FileText className="w-8 h-8 text-muted-foreground mx-auto" />
                       <div className="space-y-1">
-                        <p className="text-sm font-semibold text-gray-300">No cover letter yet</p>
-                        <p className="text-xs text-gray-500 max-w-xs mx-auto">
+                        <p className="text-sm font-semibold text-foreground">No cover letter yet</p>
+                        <p className="text-xs text-muted-foreground max-w-xs mx-auto">
                           Generate a personalized, high-conversion cover letter detailing how your Samsung internship and distributed systems projects fit this JD.
                         </p>
                       </div>
-                      <button
+                      <Button
                         onClick={handleGenerateCL}
                         disabled={generatingCL}
-                        className="px-4 py-2 text-xs bg-purple-600 hover:bg-purple-500 text-white rounded-lg font-bold transition-all disabled:opacity-50 cursor-pointer"
+                        variant="secondary"
+                        className="cursor-pointer"
                       >
                         {generatingCL ? 'Generating cover letter...' : 'Generate Cover Letter'}
-                      </button>
+                      </Button>
                     </div>
                   )}
                 </CardContent>

@@ -6,6 +6,14 @@ import { createScrapingWorker, createScoringWorker, recoverStuckJobs, setupGrace
 import { connectDB } from '../core/prisma';
 import { logger } from '../core/logger';
 
+process.on('unhandledRejection', (reason, promise) => {
+  logger.error('⚠️ Unhandled Promise Rejection at:', promise, 'reason:', reason);
+});
+
+process.on('uncaughtException', (error) => {
+  logger.error('💥 Uncaught Exception caught:', error);
+});
+
 async function startWorker(): Promise<void> {
   logger.info('🔧 Starting BullMQ workers...');
 
@@ -16,6 +24,8 @@ async function startWorker(): Promise<void> {
 
   const scrapingWorker = createScrapingWorker();
   const scoringWorker = createScoringWorker();
+  const { createResumeWorker } = require('../jobs/queues');
+  const resumeWorker = createResumeWorker();
 
   scrapingWorker.on('completed', (job) => {
     const result = job.returnvalue as { total?: number; newJobs?: number } | undefined;
@@ -27,15 +37,23 @@ async function startWorker(): Promise<void> {
   });
 
   scoringWorker.on('completed', (job) => {
-    logger.info(`✅ Scoring job ${job.id} completed (score: ${job.returnvalue?.score})`);
+    logger.info(`✅ Scoring batch job ${job.id} completed: ${job.returnvalue?.count ?? 0} jobs processed`);
   });
 
   scoringWorker.on('failed', (job, err) => {
     logger.error(`❌ Scoring job ${job?.id} failed after all retries`, { error: err.message });
   });
 
+  resumeWorker.on('completed', (job: any) => {
+    logger.info(`✅ Resume tailoring job ${job.id} completed`);
+  });
+
+  resumeWorker.on('failed', (job: any, err: any) => {
+    logger.error(`❌ Resume tailoring job ${job?.id} failed`, { error: err.message });
+  });
+
   // ── Graceful shutdown (lets current job finish) ───────────────────────
-  setupGracefulShutdown(scrapingWorker, scoringWorker);
+  setupGracefulShutdown(scrapingWorker, scoringWorker, resumeWorker);
 
   logger.info('✅ Workers running: scraping (concurrency=1) + scoring (concurrency=1)');
   logger.info('🧠 Personalized scoring active: Rishav Sharma profile loaded');

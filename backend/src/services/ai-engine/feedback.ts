@@ -4,7 +4,7 @@ import { logger } from '../../core/logger';
 /**
  * Feedback Learning System
  *
- * When you approve or skip a job, we record a compressed signal to Redis.
+ * When you approve or skip a job, we record an enriched signal to Redis.
  * The scorer reads the last 10 signals and includes them in its prompt as
  * calibration examples — making the agent genuinely learn your taste over time.
  *
@@ -13,12 +13,22 @@ import { logger } from '../../core/logger';
  *   feedback:skipped  → Redis list of JSON strings (capped at 20)
  */
 
-interface FeedbackSignal {
+export interface FeedbackSignal {
   title: string;
   company: string;
+  companyTier?: string;
   score: number;
-  techStack: string;    // comma-separated key techs from JD
-  verdict: string;
+  dimensions?: {
+    techStack: number;
+    seniorityFit: number;
+    domainFit: number;
+    compensationFit: number;
+    companyTier: number;
+  };
+  topStrengths: string[];           // top 2 strengths
+  topGaps: string[];                // top 2 gaps
+  whySkip?: string;                 // detailed skip explanation
+  userComment?: string;             // manual notes
   timestamp: number;
 }
 
@@ -33,13 +43,19 @@ export async function recordApproval(
   title: string,
   company: string,
   score: number,
-  keywordsMatched: string[]
+  dimensions: any,
+  strengths: string[],
+  userComment?: string
 ): Promise<void> {
   try {
     const signal: FeedbackSignal = {
-      title, company, score,
-      techStack: keywordsMatched.slice(0, 5).join(', '),
-      verdict: 'Approved by user',
+      title,
+      company,
+      score,
+      dimensions,
+      topStrengths: (strengths || []).slice(0, 2),
+      topGaps: [],
+      userComment,
       timestamp: Date.now(),
     };
     await redis.lpush(APPROVED_KEY, JSON.stringify(signal));
@@ -57,13 +73,21 @@ export async function recordSkip(
   title: string,
   company: string,
   score: number,
-  gaps: string[]
+  dimensions: any,
+  gaps: string[],
+  whySkip?: string,
+  userComment?: string
 ): Promise<void> {
   try {
     const signal: FeedbackSignal = {
-      title, company, score,
-      techStack: gaps.slice(0, 3).join(', '),
-      verdict: 'Skipped by user',
+      title,
+      company,
+      score,
+      dimensions,
+      topStrengths: [],
+      topGaps: (gaps || []).slice(0, 2),
+      whySkip,
+      userComment,
       timestamp: Date.now(),
     };
     await redis.lpush(SKIPPED_KEY, JSON.stringify(signal));
@@ -98,14 +122,20 @@ export async function getFeedbackCalibration(): Promise<string> {
     if (approved.length > 0) {
       calibration += '### ✅ Jobs the user APPROVED (scored highly & chose to apply):\n';
       approved.forEach((s) => {
-        calibration += `- "${s.title}" @ ${s.company} (score: ${s.score}/100, key techs: ${s.techStack || 'N/A'})\n`;
+        const dimsStr = s.dimensions
+          ? `tech: ${s.dimensions.techStack}, exp: ${s.dimensions.seniorityFit}, dom: ${s.dimensions.domainFit}, comp: ${s.dimensions.compensationFit}, tier: ${s.dimensions.companyTier}`
+          : 'N/A';
+        calibration += `- "${s.title}" @ ${s.company} (score: ${s.score}/100, dims: [${dimsStr}], strengths: [${s.topStrengths.join(', ')}]${s.userComment ? `, note: "${s.userComment}"` : ''})\n`;
       });
     }
 
     if (skipped.length > 0) {
       calibration += '\n### ❌ Jobs the user SKIPPED (rejected despite scoring):\n';
       skipped.forEach((s) => {
-        calibration += `- "${s.title}" @ ${s.company} (score: ${s.score}/100, concerns: ${s.techStack || 'N/A'})\n`;
+        const dimsStr = s.dimensions
+          ? `tech: ${s.dimensions.techStack}, exp: ${s.dimensions.seniorityFit}, dom: ${s.dimensions.domainFit}, comp: ${s.dimensions.compensationFit}, tier: ${s.dimensions.companyTier}`
+          : 'N/A';
+        calibration += `- "${s.title}" @ ${s.company} (score: ${s.score}/100, why skipped: "${s.whySkip || s.topGaps.join(', ') || 'N/A'}", dims: [${dimsStr}]${s.userComment ? `, note: "${s.userComment}"` : ''})\n`;
       });
     }
 
@@ -116,3 +146,4 @@ export async function getFeedbackCalibration(): Promise<string> {
     return '';
   }
 }
+

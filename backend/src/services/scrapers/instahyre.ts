@@ -1,8 +1,9 @@
-import { chromium, Browser, Page } from 'playwright';
+import { BrowserContext, Page } from 'playwright';
 import { JobSource, JobListing, ScraperQuery } from './base';
 import { logger } from '../../core/logger';
 import { config } from '../../core/config';
 import { fetchJobDetails } from './detailFetcher';
+import { browserPool } from './browserPool';
 
 /**
  * InstaHyre scraper — India-first platform with CTC filters.
@@ -12,15 +13,9 @@ export class InstaHyreScraper extends JobSource {
   readonly name = 'instahyre';
 
   async scrape(query: ScraperQuery): Promise<JobListing[]> {
-    let browser: Browser | null = null;
+    let context: BrowserContext | null = null;
     try {
-      browser = await chromium.launch({
-        headless: true,
-        executablePath: config.CHROMIUM_PATH,
-        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
-      });
-
-      const context = await browser.newContext({
+      context = await browserPool.newContext({
         userAgent:
           'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         viewport: { width: 1366, height: 768 },
@@ -124,7 +119,7 @@ export class InstaHyreScraper extends JobSource {
       logger.error('InstaHyre scraper error', { error });
       return [];
     } finally {
-      await browser?.close();
+      await context?.close();
     }
   }
 }

@@ -6,6 +6,42 @@ const api = axios.create({
   headers: { 'Content-Type': 'application/json' },
 });
 
+// Add request interceptor to attach JWT token
+api.interceptors.request.use(
+  (config) => {
+    if (typeof window !== 'undefined') {
+      const token = localStorage.getItem('token');
+      if (token) {
+        config.headers.Authorization = `Bearer ${token}`;
+      }
+    }
+    return config;
+  },
+  (error) => Promise.reject(error)
+);
+
+// Add response interceptor to handle 401 unauthorized errors
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response && error.response.status === 401) {
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem('token');
+        if (window.location.pathname !== '/login') {
+          window.location.href = '/login';
+        }
+      }
+    }
+    return Promise.reject(error);
+  }
+);
+
+// ─── Auth ─────────────────────────────────────────────────────────────────────
+export const authApi = {
+  login: (password: string) =>
+    api.post('/auth/login', { password }).then((r) => r.data as { token: string }),
+};
+
 // ─── Jobs ─────────────────────────────────────────────────────────────────────
 export const jobsApi = {
   list: (params?: Record<string, string | number>) =>
@@ -15,12 +51,23 @@ export const jobsApi = {
   
   get: (id: string) => api.get(`/jobs/${id}`).then((r) => r.data),
   
-  updateStatus: (id: string, status: string) =>
-    api.patch(`/jobs/${id}/status`, { status }).then((r) => r.data),
+  updateStatus: (id: string, status: string, options?: { whySkip?: string; userComment?: string }) =>
+    api.patch(`/jobs/${id}/status`, { status, ...options }).then((r) => r.data),
   
-  triggerScrape: () => api.post('/jobs/scrape').then((r) => r.data),
+  bulkUpdateStatus: (ids: string[], status: string, options?: { whySkip?: string; userComment?: string }) =>
+    api.patch('/jobs/bulk-status', { ids, status, ...options }).then((r) => r.data),
+  
+  triggerScrape: (targetScraperName?: string) =>
+    api.post('/jobs/scrape', { targetScraperName }).then((r) => r.data),
+  
+  resetScraperCircuit: (name: string) =>
+    api.post(`/jobs/scrapers/${name}/reset`).then((r) => r.data),
   
   triggerScore: (id: string) => api.post(`/jobs/${id}/score`).then((r) => r.data),
+
+  getQueueStatus: () => api.get('/jobs/queues/status').then((r) => r.data),
+
+  drainQueue: (name: string) => api.post(`/jobs/queues/${name}/drain`).then((r) => r.data),
 };
 
 // ─── Applications ─────────────────────────────────────────────────────────────
@@ -52,6 +99,15 @@ export const settingsApi = {
   getProfile: () => api.get('/settings/profile').then((r) => r.data),
   updateProfile: (data: Record<string, unknown>) =>
     api.patch('/settings/profile', data).then((r) => r.data),
+  
+  compileProfile: (latex: string) =>
+    api.post('/settings/profile/compile', { latex }).then((r) => r.data as { pdfUrl: string }),
+
+  submitOnboarding: (data: { profileJson: any; qaPairs: { question: string; answer: string }[] }) =>
+    api.post('/settings/onboard', data).then((r) => r.data),
+
+  simulateScore: (data: { title: string; company?: string; description: string }) =>
+    api.post('/settings/simulate-score', data).then((r) => r.data),
 };
 
 // ─── Types ────────────────────────────────────────────────────────────────────

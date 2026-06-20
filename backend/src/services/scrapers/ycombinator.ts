@@ -1,11 +1,8 @@
-import { chromium } from 'playwright-extra';
-import stealth from 'puppeteer-extra-plugin-stealth';
-import { Browser, Page } from 'playwright';
+import { BrowserContext, Page } from 'playwright';
 import { JobSource, JobListing, ScraperQuery } from './base';
 import { logger } from '../../core/logger';
 import { config } from '../../core/config';
-
-chromium.use(stealth());
+import { browserPool } from './browserPool';
 
 const USER_AGENTS = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
@@ -20,22 +17,9 @@ export class YCombinatorScraper extends JobSource {
   readonly name = 'ycombinator';
 
   async scrape(query: ScraperQuery): Promise<JobListing[]> {
-    let browser: Browser | null = null;
+    let context: BrowserContext | null = null;
     try {
-      browser = await chromium.launch({
-        headless: true,
-        executablePath: config.CHROMIUM_PATH,
-        args: [
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-          '--disable-blink-features=AutomationControlled',
-          '--disable-dev-shm-usage',
-          '--disable-extensions',
-          '--disable-gpu',
-        ],
-      });
-
-      const context = await browser.newContext({
+      context = await browserPool.newContext({
         userAgent: getRandomItem(USER_AGENTS),
         viewport: { width: 1440, height: 900 },
         locale: 'en-US',
@@ -44,13 +28,17 @@ export class YCombinatorScraper extends JobSource {
       await context.route('**/*', (route) => {
         const url = route.request().url().toLowerCase();
         const resourceType = route.request().resourceType();
+        if (resourceType === 'document') {
+          route.continue();
+          return;
+        }
         if (
           resourceType === 'image' ||
           resourceType === 'font' ||
           resourceType === 'media' ||
           url.includes('google-analytics') ||
           url.includes('analytics') ||
-          url.includes('tracking')
+          (url.includes('tracking') && resourceType === 'script')
         ) {
           route.abort();
         } else {
@@ -193,7 +181,7 @@ export class YCombinatorScraper extends JobSource {
       logger.error('YCombinator scraper error', { error });
       return [];
     } finally {
-      await browser?.close();
+      await context?.close();
     }
   }
 }

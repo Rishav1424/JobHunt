@@ -14,28 +14,26 @@ export async function lookupCachedAnswer(question: string): Promise<string | nul
 
     // 1. Generate query embedding
     const queryVector = await generateEmbedding(question);
+    const vectorStr = `[${queryVector.join(',')}]`;
 
-    // 2. Load all cached answers from database
-    const cachedAnswers = await prisma.answerBank.findMany();
+    // 2. Query nearest neighbor using pgvector
+    const result = await prisma.$queryRaw<any[]>`
+      SELECT question, answer,
+             (1 - (embedding_vec <=> cast(${vectorStr} as vector))) AS similarity
+      FROM "AnswerBank"
+      ORDER BY embedding_vec <=> cast(${vectorStr} as vector)
+      LIMIT 1
+    `;
 
-    if (cachedAnswers.length === 0) {
+    if (result.length === 0) {
       return null;
     }
 
-    // 3. Compute similarities in memory
-    let bestMatch: typeof cachedAnswers[0] | null = null;
-    let bestSimilarity = -1;
+    const bestMatch = result[0];
+    const bestSimilarity = Number(bestMatch.similarity || 0);
 
-    for (const record of cachedAnswers) {
-      const similarity = cosineSimilarity(queryVector, record.embedding);
-      if (similarity > bestSimilarity) {
-        bestSimilarity = similarity;
-        bestMatch = record;
-      }
-    }
-
-    // 4. Return if matches threshold
-    if (bestMatch && bestSimilarity >= SEMANTIC_CACHE_THRESHOLD) {
+    // 3. Return if matches threshold
+    if (bestSimilarity >= SEMANTIC_CACHE_THRESHOLD) {
       logger.info(
         `🎯 Semantic cache HIT! Found match: "${bestMatch.question.slice(0, 50)}..." (similarity: ${bestSimilarity.toFixed(4)})`
       );
@@ -43,9 +41,7 @@ export async function lookupCachedAnswer(question: string): Promise<string | nul
     }
 
     logger.debug(
-      bestMatch
-        ? `Cache miss. Best match was "${bestMatch.question.slice(0, 40)}..." (similarity: ${bestSimilarity.toFixed(4)})`
-        : 'Cache miss. No answers in bank.'
+      `Cache miss. Best match was "${bestMatch.question.slice(0, 40)}..." (similarity: ${bestSimilarity.toFixed(4)})`
     );
     return null;
   } catch (error) {
@@ -65,7 +61,7 @@ export async function saveAnswerToBank(question: string, answer: string): Promis
     const embedding = await generateEmbedding(question);
 
     // Upsert into DB
-    await prisma.answerBank.upsert({
+    const record = await prisma.answerBank.upsert({
       where: { question },
       create: {
         question,
@@ -77,6 +73,14 @@ export async function saveAnswerToBank(question: string, answer: string): Promis
         embedding,
       },
     });
+
+    // Sync pgvector column
+    const vectorStr = `[${embedding.join(',')}]`;
+    await prisma.$executeRawUnsafe(
+      'UPDATE "AnswerBank" SET embedding_vec = cast($1 as vector) WHERE id = $2',
+      vectorStr,
+      record.id
+    );
 
     logger.info('✅ Answer saved to AnswerBank.');
   } catch (error) {
