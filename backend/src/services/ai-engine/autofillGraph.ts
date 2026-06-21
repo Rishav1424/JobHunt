@@ -1,9 +1,10 @@
 import { prisma } from '../../core/prisma';
-import { proModel, flashModel, callWithRetry, parseGeminiJSON, generateEmbedding, cosineSimilarity } from '../../core/gemini';
+import { proModel, flashModel, callWithRetry, parseGeminiJSON, generateEmbedding } from '../../core/gemini';
 import { logger } from '../../core/logger';
 import { retrieveRelevantContext, formatRetrievalContext } from './ragService';
 import { lookupCachedAnswer, saveAnswerToBank } from './answerBankService';
 import { compileTailoredResume } from './resumeCompiler';
+import { redis } from '../../core/redis';
 
 export interface AutofillField {
   id: string;      // DOM element identifier/selector
@@ -33,8 +34,12 @@ export interface AutofillState {
   progressMessage?: string;
 }
 
-// In-memory state store for active autofill runs (indexed by socket id or jobId)
+// In-memory store for active graph runs (live executors in this process)
 const activeGraphRuns = new Map<string, AutofillGraphExecutor>();
+
+// Redis key helper for persisted run state
+const runStateKey = (key: string) => `autofill:run:${key}`;
+const RUN_STATE_TTL_S = 7200; // 2 hours
 
 export class AutofillGraphExecutor {
   public state: AutofillState;
@@ -66,16 +71,61 @@ export class AutofillGraphExecutor {
     return activeGraphRuns.get(key);
   }
 
+  /** Task 3: Retrieve just the persisted AutofillState from Redis (for reconnect scenarios). */
+  public static async getRunState(key: string): Promise<AutofillState | null> {
+    try {
+      const raw = await redis.get(runStateKey(key));
+      return raw ? (JSON.parse(raw) as AutofillState) : null;
+    } catch {
+      return null;
+    }
+  }
+
   public static registerRun(key: string, run: AutofillGraphExecutor) {
     activeGraphRuns.set(key, run);
+    // Task 3: Persist state snapshot to Redis for cross-process durability
+    redis.set(runStateKey(run.state.jobId), JSON.stringify(run.state), 'EX', RUN_STATE_TTL_S).catch(
+      (err) => logger.warn(`autofillGraph: Failed to persist run state to Redis for jobId ${run.state.jobId}`, { error: err })
+    );
   }
 
   public static removeRun(key: string) {
-    activeGraphRuns.delete(key);
+    const run = activeGraphRuns.get(key);
+    if (run) {
+      activeGraphRuns.delete(run.state.jobId);
+      if (run.socketId) {
+        activeGraphRuns.delete(run.socketId);
+      }
+      // Task 3: Remove Redis state on completion/failure
+      redis.del(runStateKey(run.state.jobId)).catch(
+        (err) => logger.warn(`autofillGraph: Failed to delete Redis run state for jobId ${run.state.jobId}`, { error: err })
+      );
+    } else {
+      activeGraphRuns.delete(key);
+      redis.del(runStateKey(key)).catch(() => {});
+    }
+  }
+
+  public static removeSocketMapping(socketId: string) {
+    activeGraphRuns.delete(socketId);
+  }
+
+  public updateSocket(socketId: string, onStateChange: (state: AutofillState) => void) {
+    if (this.socketId && activeGraphRuns.get(this.socketId) === this) {
+      activeGraphRuns.delete(this.socketId);
+    }
+    this.socketId = socketId;
+    this.onStateChange = onStateChange;
+    activeGraphRuns.set(socketId, this);
+    activeGraphRuns.set(this.state.jobId, this);
   }
 
   private emitUpdate() {
     this.onStateChange({ ...this.state });
+    // Task 3: Persist state snapshot to Redis on state changes
+    redis.set(runStateKey(this.state.jobId), JSON.stringify(this.state), 'EX', RUN_STATE_TTL_S).catch(
+      (err) => logger.warn(`autofillGraph: Failed to persist run state to Redis for jobId ${this.state.jobId}`, { error: err })
+    );
   }
 
   /**
@@ -138,10 +188,15 @@ export class AutofillGraphExecutor {
             field.unresolved = false;
           }
 
-          // Save descriptive answers to AnswerBank for future reuse
+          // Save ALL HITL-resolved answers to AnswerBank (user explicitly provided them)
           const targetField = this.state.fields.find((f) => f.id === fieldId);
-          if (targetField && (targetField.type === 'textarea' || targetField.label.length > 25)) {
-            await saveAnswerToBank(targetField.label, val);
+          if (targetField && val.trim().length >= 2) {
+            await saveAnswerToBank(targetField.label, val, this.state.companyName);
+            // Also save with normalized label for better semantic matching
+            const normalised = targetField.label.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
+            if (normalised !== targetField.label.toLowerCase()) {
+              await saveAnswerToBank(normalised, val, this.state.companyName).catch(() => {}); // best-effort
+            }
           }
         }
         this.state.unresolvedFields = [];
@@ -280,6 +335,7 @@ export class AutofillGraphExecutor {
 
   /**
    * Node 2: Handle custom questions in batch parallel execution.
+   * Uses pgvector for O(log n) retrieval instead of O(n) in-memory scans.
    */
   private async processCustomFields() {
     logger.info('Running Node: ProcessCustomFields');
@@ -299,19 +355,27 @@ export class AutofillGraphExecutor {
     logger.info(`Processing ${customFields.length} custom fields in batch...`);
     this.emitProgress(`Checking AnswerBank cache for ${customFields.length} custom questions...`);
 
-    // Fetch all cached answers for fast match and context matching
-    const allCachedAnswers = await prisma.answerBank.findMany();
-
-    // Fast exact match (no embedding calls needed)
+    // Fast exact match via indexed DB query — no findMany() needed
     for (const field of customFields) {
-      const exactMatch = allCachedAnswers.find(
-        (ans) => ans.question.toLowerCase().trim() === field.label.toLowerCase().trim()
-      );
+      let exactMatch = await prisma.answerBank.findFirst({
+        where: {
+          question: { equals: field.label, mode: 'insensitive' },
+          company: this.state.companyName,
+        },
+      });
+      if (!exactMatch) {
+        exactMatch = await prisma.answerBank.findFirst({
+          where: {
+            question: { equals: field.label, mode: 'insensitive' },
+            company: "",
+          },
+        });
+      }
       if (exactMatch) {
         this.state.answers[field.id] = exactMatch.answer;
         field.value = exactMatch.answer;
         field.confidence = 0.99;
-        logger.info(`🎯 Exact cache hit for field: "${field.label}"`);
+        logger.info(`🎯 Exact cache hit for field: "${field.label}" (company: ${exactMatch.company || 'general'})`);
       }
     }
 
@@ -324,66 +388,68 @@ export class AutofillGraphExecutor {
       return;
     }
 
-    // Retrieve RAG Context (1 embedding call for the entire job)
+    // ── Task 13: Reuse pre-computed jdStructured & embedding ─────────────────
+    // Retrieve RAG Context using pgvector (O(log n) HNSW index) — no findMany()
     this.emitProgress(`Retrieving relevant background context for ${remainingFields.length} questions...`);
     let RAGContext = 'No specific background context available.';
+    let jobEmbeddingVector: number[] | null = null;
+
     try {
-      const jobEmbeddingQuery = `${this.state.jobTitle} at ${this.state.companyName}\n\n${this.state.jobDescription}`;
-      const jobEmbeddingVector = await generateEmbedding(jobEmbeddingQuery.slice(0, 8000));
-      
-      const chunks = await prisma.knowledgeChunk.findMany();
-      if (chunks.length > 0) {
-        const retrieved = chunks
-          .map((chunk) => ({
-            category: chunk.category,
-            title: chunk.title,
-            content: chunk.content,
-            similarity: cosineSimilarity(jobEmbeddingVector, chunk.embedding),
-          }))
-          .sort((a, b) => b.similarity - a.similarity)
-          .slice(0, 6); // Top 6 most relevant chunks for this job
-        
-        RAGContext = retrieved
-          .map(
-            (c, idx) =>
-              `[Context Chunk #${idx + 1}: ${c.title || c.category.toUpperCase()}]\n${c.content}`
-          )
-          .join('\n\n---\n\n');
+      const existingJob = await prisma.job.findUnique({
+        where: { id: this.state.jobId },
+        select: { description: true, jdStructured: true, embedding: true },
+      });
+
+      // Build a richer context signal from pre-computed jdStructured if available
+      let jobContextSignal = `${this.state.jobTitle} at ${this.state.companyName}`;
+      if (existingJob?.jdStructured) {
+        const s = existingJob.jdStructured as any;
+        if (s.mustHaveSkills?.length) {
+          jobContextSignal += `\nRequired: ${(s.mustHaveSkills as string[]).join(', ')}`;
+        }
+        if (s.techStack?.length) {
+          jobContextSignal += `\nStack: ${(s.techStack as string[]).join(', ')}`;
+        }
+      } else {
+        jobContextSignal += `\n${this.state.jobDescription.slice(0, 500)}`;
       }
+
+      // Reuse the job's stored embedding if available — skip API call
+      if (existingJob?.embedding && existingJob.embedding.length > 0) {
+        jobEmbeddingVector = existingJob.embedding;
+        logger.info('Reusing pre-computed job embedding for RAG retrieval');
+      } else {
+        jobEmbeddingVector = await generateEmbedding(jobContextSignal.slice(0, 8000));
+      }
+
+      // Use pgvector for fast similarity retrieval of knowledge chunks
+      const chunks = await retrieveRelevantContext(jobContextSignal, 6);
+      RAGContext = formatRetrievalContext(chunks);
     } catch (ragErr) {
       logger.error('Failed to retrieve RAG context for batch custom fields', { error: ragErr });
     }
 
-    // Retrieve Relevant AnswerBank Context (using the job description embedding to find top matches)
+    // ── Task 2: AnswerBank semantic lookup via pgvector ───────────────────────
+    // Use lookupCachedAnswer() which uses pgvector — no findMany() + in-memory cosine
     let formattedAnswerBank = 'No previously answered questions match this job context.';
-    if (allCachedAnswers.length > 0) {
-      try {
-        const existingJob = await prisma.job.findUnique({ where: { id: this.state.jobId } });
-        let queryVector = existingJob?.embedding;
-        if (!queryVector || queryVector.length === 0) {
-          const jobEmbeddingQuery = `${this.state.jobTitle} at ${this.state.companyName}\n\n${this.state.jobDescription}`;
-          queryVector = await generateEmbedding(jobEmbeddingQuery.slice(0, 8000));
+    try {
+      if (jobEmbeddingVector) {
+        const vectorStr = `[${jobEmbeddingVector.join(',')}]`;
+        const topAnswers = await prisma.$queryRaw<{ question: string; answer: string; company: string }[]>`
+          SELECT question, answer, company
+          FROM "AnswerBank"
+          WHERE company = ${this.state.companyName} OR company = ''
+          ORDER BY embedding_vec <=> cast(${vectorStr} as vector)
+          LIMIT 15
+        `;
+        if (topAnswers.length > 0) {
+          formattedAnswerBank = topAnswers
+            .map((m) => `Q: "${m.question}"\nA: "${m.answer}"`)
+            .join('\n\n');
         }
-
-        const matches = allCachedAnswers
-          .map((record) => ({
-            question: record.question,
-            answer: record.answer,
-            similarity: cosineSimilarity(queryVector!, record.embedding),
-          }))
-          .sort((a, b) => b.similarity - a.similarity)
-          .slice(0, 15); // Top 15 previous Q&As
-        
-        formattedAnswerBank = matches
-          .map((m) => `Q: "${m.question}"\nA: "${m.answer}"`)
-          .join('\n\n');
-      } catch (cacheErr) {
-        logger.error('Failed to retrieve relevant AnswerBank context', { error: cacheErr });
-        formattedAnswerBank = allCachedAnswers
-          .slice(-15)
-          .map((m) => `Q: "${m.question}"\nA: "${m.answer}"`)
-          .join('\n\n');
       }
+    } catch (cacheErr) {
+      logger.error('Failed to retrieve relevant AnswerBank context via pgvector', { error: cacheErr });
     }
 
     // 4. Batch Gemini Prompt

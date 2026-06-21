@@ -24,8 +24,9 @@ async function startWorker(): Promise<void> {
 
   const scrapingWorker = createScrapingWorker();
   const scoringWorker = createScoringWorker();
-  const { createResumeWorker } = require('../jobs/queues');
+  const { createResumeWorker, createRecalibrationWorker } = require('../jobs/queues');
   const resumeWorker = createResumeWorker();
+  const recalibrationWorker = createRecalibrationWorker();
 
   scrapingWorker.on('completed', (job) => {
     const result = job.returnvalue as { total?: number; newJobs?: number } | undefined;
@@ -52,8 +53,16 @@ async function startWorker(): Promise<void> {
     logger.error(`❌ Resume tailoring job ${job?.id} failed`, { error: err.message });
   });
 
+  recalibrationWorker.on('completed', (job: any) => {
+    logger.info(`✅ Weight recalibration job ${job.id} completed`);
+  });
+
+  recalibrationWorker.on('failed', (job: any, err: any) => {
+    logger.error(`❌ Weight recalibration job ${job?.id} failed`, { error: err.message });
+  });
+
   // ── Graceful shutdown (lets current job finish) ───────────────────────
-  setupGracefulShutdown(scrapingWorker, scoringWorker, resumeWorker);
+  setupGracefulShutdown(scrapingWorker, scoringWorker, resumeWorker, recalibrationWorker);
 
   logger.info('✅ Workers running: scraping (concurrency=1) + scoring (concurrency=1)');
   logger.info('🧠 Personalized scoring active: Rishav Sharma profile loaded');

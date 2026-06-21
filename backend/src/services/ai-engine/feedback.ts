@@ -34,7 +34,11 @@ export interface FeedbackSignal {
 
 const APPROVED_KEY = 'feedback:approved';
 const SKIPPED_KEY = 'feedback:skipped';
-const MAX_SIGNALS = 20;
+const MAX_SIGNALS = 30;
+
+// Task 10: Redis cache for calibration text (5-minute TTL)
+const CALIBRATION_CACHE_KEY = 'feedback:calibration:text';
+const CALIBRATION_CACHE_TTL = 300; // 5 minutes
 
 /**
  * Record an approval signal when the user approves a job.
@@ -60,7 +64,18 @@ export async function recordApproval(
     };
     await redis.lpush(APPROVED_KEY, JSON.stringify(signal));
     await redis.ltrim(APPROVED_KEY, 0, MAX_SIGNALS - 1);
+    // Invalidate calibration cache so next scoring run picks up the new signal
+    await redis.del(CALIBRATION_CACHE_KEY);
     logger.info(`Feedback: recorded approval for "${title}" @ ${company}`);
+
+    // Trigger recalibration check
+    const count = await redis.incr('feedback:total_count');
+    if (count % 10 === 0) {
+      const { triggerWeightRecalibration } = require('../../jobs/queues');
+      await triggerWeightRecalibration().catch((err: any) =>
+        logger.warn('Failed to trigger weight recalibration', { error: err })
+      );
+    }
   } catch (err) {
     logger.warn('Failed to record approval signal', { error: err });
   }
@@ -92,7 +107,18 @@ export async function recordSkip(
     };
     await redis.lpush(SKIPPED_KEY, JSON.stringify(signal));
     await redis.ltrim(SKIPPED_KEY, 0, MAX_SIGNALS - 1);
+    // Invalidate calibration cache so next scoring run picks up the new signal
+    await redis.del(CALIBRATION_CACHE_KEY);
     logger.info(`Feedback: recorded skip for "${title}" @ ${company}`);
+
+    // Trigger recalibration check
+    const count = await redis.incr('feedback:total_count');
+    if (count % 10 === 0) {
+      const { triggerWeightRecalibration } = require('../../jobs/queues');
+      await triggerWeightRecalibration().catch((err: any) =>
+        logger.warn('Failed to trigger weight recalibration', { error: err })
+      );
+    }
   } catch (err) {
     logger.warn('Failed to record skip signal', { error: err });
   }
@@ -100,10 +126,18 @@ export async function recordSkip(
 
 /**
  * Get formatted calibration text to inject into the scoring prompt.
+ * Cached in Redis for 5 minutes to avoid 2 lrange calls per scoring run.
  * Returns empty string if not enough signals yet.
  */
 export async function getFeedbackCalibration(): Promise<string> {
   try {
+    // Task 10: Return cached calibration if available
+    const cached = await redis.get(CALIBRATION_CACHE_KEY);
+    if (cached) {
+      logger.debug('Returning cached feedback calibration text');
+      return cached;
+    }
+
     const [approvedRaw, skippedRaw] = await Promise.all([
       redis.lrange(APPROVED_KEY, 0, 9),
       redis.lrange(SKIPPED_KEY, 0, 9),
@@ -140,6 +174,10 @@ export async function getFeedbackCalibration(): Promise<string> {
     }
 
     calibration += '\nPattern: Score similar jobs to approved ones higher. Score similar jobs to skipped ones lower.\n';
+
+    // Cache for 5 minutes — invalidated on recordApproval/recordSkip
+    await redis.set(CALIBRATION_CACHE_KEY, calibration, 'EX', CALIBRATION_CACHE_TTL);
+
     return calibration;
   } catch (err) {
     logger.warn('Failed to get feedback calibration', { error: err });
@@ -147,3 +185,94 @@ export async function getFeedbackCalibration(): Promise<string> {
   }
 }
 
+/**
+ * Recalibrate settings.dimensionWeights automatically based on approval vs skip history.
+ */
+export async function recalibrateWeights(): Promise<void> {
+  try {
+    const { validateAndNormalizeWeights } = require('./scorer');
+    const { prisma } = require('../../core/prisma');
+
+    logger.info('Starting adaptive weight recalibration...');
+    
+    // Fetch last 30 feedback signals
+    const [approvedRaw, skippedRaw] = await Promise.all([
+      redis.lrange(APPROVED_KEY, 0, 29),
+      redis.lrange(SKIPPED_KEY, 0, 29),
+    ]);
+
+    const approved = approvedRaw.map((s) => JSON.parse(s) as FeedbackSignal);
+    const skipped = skippedRaw.map((s) => JSON.parse(s) as FeedbackSignal);
+
+    // Require at least 5 approved signals to recalibrate
+    if (approved.length < 5) {
+      logger.info(`Not enough feedback signals yet to recalibrate weights (approved: ${approved.length}/5)`);
+      return;
+    }
+
+    const settings = await prisma.settings.findFirst();
+    if (!settings) {
+      logger.warn('Settings not found during weight recalibration');
+      return;
+    }
+
+    const defaultWeights = {
+      techStack: 0.15,
+      seniorityFit: 0.30,
+      domainFit: 0.10,
+      compensationFit: 0.25,
+      companyTier: 0.20,
+    };
+
+    const currentWeights = (settings.dimensionWeights as Record<string, number> | null) || defaultWeights;
+
+    const dimensions = ['techStack', 'seniorityFit', 'domainFit', 'compensationFit', 'companyTier'] as const;
+    type Dim = typeof dimensions[number];
+
+    const approvedAvgs: Record<Dim, number> = {} as any;
+    const skippedAvgs: Record<Dim, number> = {} as any;
+
+    for (const dim of dimensions) {
+      const approvedVals = approved.map(s => s.dimensions?.[dim] ?? 50);
+      approvedAvgs[dim] = approvedVals.reduce((a, b) => a + b, 0) / approvedVals.length;
+
+      // If no skipped signals, default to 50 for comparison
+      const skippedVals = skipped.length > 0 ? skipped.map(s => s.dimensions?.[dim] ?? 50) : [50];
+      skippedAvgs[dim] = skippedVals.reduce((a, b) => a + b, 0) / skippedVals.length;
+    }
+
+    const learningRate = 0.3;
+    const newWeights: Record<string, number> = {};
+
+    for (const dim of dimensions) {
+      const d = approvedAvgs[dim] - skippedAvgs[dim];
+      // Adjust weight based on delta. If delta is positive, we increase weight. If negative, decrease.
+      // We clip raw weight to at least 0.05 to ensure all dimensions are considered.
+      const rawAdjusted = Math.max(0.05, currentWeights[dim] * (1 + learningRate * (d / 100)));
+      newWeights[dim] = rawAdjusted;
+    }
+
+    // Normalize
+    const sum = Object.values(newWeights).reduce((a, b) => a + b, 0);
+    const normalizedWeights = Object.fromEntries(
+      Object.entries(newWeights).map(([k, v]) => [k, v / sum])
+    );
+
+    // Apply constraints
+    const validatedWeights = validateAndNormalizeWeights(normalizedWeights, defaultWeights);
+
+    logger.info('Adaptive weight recalibration computed new weights:', validatedWeights);
+
+    await prisma.settings.update({
+      where: { id: settings.id },
+      data: { dimensionWeights: validatedWeights },
+    });
+
+    // Invalidate calibration cache
+    await redis.del(CALIBRATION_CACHE_KEY);
+
+    logger.info('✅ Successfully recalibrated and saved settings.dimensionWeights');
+  } catch (err) {
+    logger.error('Failed to recalibrate weights', { error: err });
+  }
+}

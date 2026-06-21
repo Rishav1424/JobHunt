@@ -66,12 +66,18 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
 
   // Autofill agent states
-  const [agentStatus, setAgentStatus] = useState<AutofillState['status'] | 'idle' | 'preview' | 'validation_failed' | 'autofill_completed'>('idle');
+  const [agentStatus, setAgentStatus] = useState<AutofillState['status'] | 'idle' | 'preview' | 'validation_failed' | 'autofill_completed' | 'login_needed'>('idle');
   const [agentState, setAgentState] = useState<AutofillState | null>(null);
   const [hitlAnswers, setHitlAnswers] = useState<Record<string, string>>({});
   const [editedAnswers, setEditedAnswers] = useState<Record<string, string>>({});
   const [failedFieldsList, setFailedFieldsList] = useState<string[]>([]);
   const [paginationInfo, setPaginationInfo] = useState<{ isMultiPage: boolean; currentPage: number } | null>(null);
+
+  // Login credential states
+  const [loginDomain, setLoginDomain] = useState<string | null>(null);
+  const [loginEmail, setLoginEmail] = useState<string>('');
+  const [loginPassword, setLoginPassword] = useState<string>('');
+  const [saveCreds, setSaveCreds] = useState<boolean>(true);
 
   const socketRef = useRef<Socket | null>(null);
 
@@ -162,6 +168,60 @@ export default function App() {
     }
     init();
   }, [isAuthenticated]);
+
+  // Hook to handle incoming runtime messages (login request, OTP progress)
+  useEffect(() => {
+    if (typeof chrome !== 'undefined' && chrome.runtime) {
+      const listener = (message: any, _sender: any, _sendResponse: any) => {
+        if (message.action === 'login_needed') {
+          setLoginDomain(message.hostname);
+          setAgentStatus('login_needed');
+        } else if (message.action === 'otp_checking') {
+          if (agentState) {
+            setAgentState(prev => prev ? { ...prev, progressMessage: 'Checking Gmail for OTP...' } : null);
+          }
+        } else if (message.action === 'otp_filled') {
+          if (agentState) {
+            setAgentState(prev => prev ? { ...prev, progressMessage: `Successfully filled OTP: ${message.otp}` } : null);
+          }
+        } else if (message.action === 'otp_failed') {
+          if (agentState) {
+            setAgentState(prev => prev ? { ...prev, progressMessage: 'Gmail OTP retrieval timed out. Please enter code manually.' } : null);
+          }
+        }
+      };
+      chrome.runtime.onMessage.addListener(listener);
+      return () => chrome.runtime.onMessage.removeListener(listener);
+    }
+  }, [agentState]);
+
+  // Handle credential submission
+  function submitCredentials() {
+    if (!loginDomain) return;
+
+    if (saveCreds) {
+      chrome.storage.local.set({
+        [`creds_${loginDomain}`]: { email: loginEmail, password: loginPassword }
+      });
+    }
+
+    chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
+      if (tab && tab.id) {
+        chrome.tabs.sendMessage(
+          tab.id,
+          { action: 'fill_login', creds: { email: loginEmail, password: loginPassword } },
+          (response) => {
+            if (response && response.success) {
+              setAgentStatus('parsing');
+              setLoginDomain(null);
+            } else {
+              alert('Failed to fill credentials: ' + (response?.error || 'Unknown error'));
+            }
+          }
+        );
+      }
+    });
+  }
 
   // 2. Fetch detected job
   async function detectJob(url: string) {
@@ -331,7 +391,7 @@ export default function App() {
     }
 
     setAgentStatus('mapping');
-    socketRef.current.emit('autofill:hitl-resolve', { answers: hitlAnswers });
+    socketRef.current.emit('autofill:hitl-resolve', { jobId: job?.id, answers: hitlAnswers });
   }
 
   // 6. Handle login
@@ -534,7 +594,7 @@ export default function App() {
           )}
 
           {/* Stepper Progress View */}
-          {agentStatus !== 'idle' && agentStatus !== 'waiting_for_user' && agentStatus !== 'preview' && agentStatus !== 'validation_failed' && agentStatus !== 'autofill_completed' && agentStatus !== 'failed' && (
+          {agentStatus !== 'idle' && agentStatus !== 'waiting_for_user' && agentStatus !== 'preview' && agentStatus !== 'validation_failed' && agentStatus !== 'autofill_completed' && agentStatus !== 'failed' && agentStatus !== 'login_needed' && (
             <Card className="bg-card/30">
               <CardHeader className="pb-3 flex flex-row items-center justify-between space-y-0">
                 <CardTitle className="text-xs text-primary uppercase tracking-wider font-bold">Agent Executing Workflow</CardTitle>
@@ -563,6 +623,58 @@ export default function App() {
                   <span className="font-mono text-foreground leading-snug">{agentState.progressMessage}</span>
                 </CardFooter>
               )}
+            </Card>
+          )}
+
+          {/* Login Needed Form */}
+          {agentStatus === 'login_needed' && loginDomain && (
+            <Card className="bg-card border-primary/45 flex-1 flex flex-col">
+              <CardHeader className="pb-2.5 border-b border-border mb-3 text-primary">
+                <div className="flex items-start gap-2.5">
+                  <Lock className="w-5 h-5 mt-0.5 shrink-0" />
+                  <div>
+                    <CardTitle className="text-xs text-foreground">Login Required</CardTitle>
+                    <CardDescription>Enter credentials for {loginDomain}:</CardDescription>
+                  </div>
+                </div>
+              </CardHeader>
+              <CardContent className="flex-1 flex flex-col gap-3.5">
+                <div className="flex flex-col gap-1">
+                  <label className="text-[10px] font-semibold text-muted-foreground">Email / Username</label>
+                  <Input
+                    type="text"
+                    placeholder="email@example.com"
+                    value={loginEmail}
+                    onChange={(e) => setLoginEmail(e.target.value)}
+                  />
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label className="text-[10px] font-semibold text-muted-foreground">Password</label>
+                  <Input
+                    type="password"
+                    placeholder="••••••••"
+                    value={loginPassword}
+                    onChange={(e) => setLoginPassword(e.target.value)}
+                  />
+                </div>
+                <div className="flex items-center gap-2 mt-1">
+                  <input
+                    type="checkbox"
+                    id="saveCreds"
+                    checked={saveCreds}
+                    onChange={(e) => setSaveCreds(e.target.checked)}
+                    className="w-3.5 h-3.5 rounded border-gray-300 text-primary focus:ring-primary"
+                  />
+                  <label htmlFor="saveCreds" className="text-[11px] text-muted-foreground cursor-pointer select-none">
+                    Save credentials for this site
+                  </label>
+                </div>
+              </CardContent>
+              <CardFooter className="pt-4">
+                <Button onClick={submitCredentials} className="w-full cursor-pointer">
+                  Fill Credentials & Resume <ChevronRight className="w-3.5 h-3.5 ml-1" />
+                </Button>
+              </CardFooter>
             </Card>
           )}
 

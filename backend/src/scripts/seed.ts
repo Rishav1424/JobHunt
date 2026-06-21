@@ -171,6 +171,9 @@ Return a JSON array of objects with the fields: category, title, and content.
       wellfound: true,
       instahyre: true,
       linkedin: true,
+      naukri: true,
+      ats: true,
+      ycombinator: true,
     },
 
     blacklistedCompanies: [

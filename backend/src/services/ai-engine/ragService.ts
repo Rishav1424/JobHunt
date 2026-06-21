@@ -126,23 +126,32 @@ Return a JSON array of objects with the fields: category, title, and content.
     // Clear existing chunks to avoid duplicates
     await prisma.knowledgeChunk.deleteMany();
 
-    for (const chunk of parsedChunks) {
-      const embedding = await generateEmbedding(chunk.content);
-      const record = await prisma.knowledgeChunk.create({
-        data: {
-          category: chunk.category,
-          title: chunk.title,
-          content: chunk.content,
-          embedding,
-        },
-      });
+    // Task 12: Process embeddings in parallel batches of 3 instead of serial
+    const CHUNK_BATCH_SIZE = 3;
+    for (let i = 0; i < parsedChunks.length; i += CHUNK_BATCH_SIZE) {
+      const batch = parsedChunks.slice(i, i + CHUNK_BATCH_SIZE);
+      logger.info(`   Generating embeddings for chunks ${i + 1}-${Math.min(i + CHUNK_BATCH_SIZE, parsedChunks.length)}/${parsedChunks.length}...`);
 
-      // Sync pgvector column
-      const vectorStr = `[${embedding.join(',')}]`;
-      await prisma.$executeRawUnsafe(
-        'UPDATE "KnowledgeChunk" SET embedding_vec = cast($1 as vector) WHERE id = $2',
-        vectorStr,
-        record.id
+      await Promise.all(
+        batch.map(async (chunk) => {
+          const embedding = await generateEmbedding(chunk.content);
+          const record = await prisma.knowledgeChunk.create({
+            data: {
+              category: chunk.category,
+              title: chunk.title,
+              content: chunk.content,
+              embedding,
+            },
+          });
+
+          // Sync pgvector column
+          const vectorStr = `[${embedding.join(',')}]`;
+          await prisma.$executeRawUnsafe(
+            'UPDATE "KnowledgeChunk" SET embedding_vec = cast($1 as vector) WHERE id = $2',
+            vectorStr,
+            record.id
+          );
+        })
       );
     }
     logger.info('✅ KnowledgeChunks re-seeded successfully!');

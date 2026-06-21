@@ -8,11 +8,18 @@
     "scripting",
     "storage",
     "downloads",
-    "sidePanel"
+    "sidePanel",
+    "identity"
   ],
   "host_permissions": [
     "http://localhost:4000/*"
   ],
+  "oauth2": {
+    "client_id": "YOUR_GOOGLE_OAUTH_CLIENT_ID.apps.googleusercontent.com",
+    "scopes": [
+      "https://www.googleapis.com/auth/gmail.readonly"
+    ]
+  },
   "background": {
     "service_worker": "src/background.ts",
     "type": "module"
@@ -22,7 +29,18 @@
       "js": ["src/content.ts"],
       "matches": [
         "https://jobs.lever.co/*",
-        "https://boards.greenhouse.io/*"
+        "https://boards.greenhouse.io/*",
+        "https://*.myworkdayjobs.com/*",
+        "https://app.ashbyhq.com/*",
+        "https://wellfound.com/*",
+        "https://angel.co/*",
+        "https://www.instahyre.com/*",
+        "https://careers.smartrecruiters.com/*",
+        "https://*.icims.com/*",
+        "https://*.taleo.net/*",
+        "https://www.naukri.com/*",
+        "https://*.hire.trakstar.com/*",
+        "https://jobs.ashbyhq.com/*"
       ],
       "run_at": "document_idle"
     }

@@ -133,17 +133,6 @@ export default function DashboardPage() {
     loadStats(); // Refresh stats cards
   });
 
-  const handleScrape = async () => {
-    setScraping(true);
-    try {
-      await jobsApi.triggerScrape();
-    } catch (err) {
-      console.error('Failed to run scraper', err);
-    } finally {
-      setTimeout(() => setScraping(false), 2000);
-    }
-  };
-
   if (loading) {
     return (
       <div className="p-6 space-y-6 max-w-6xl mx-auto bg-background min-h-screen text-foreground font-sans">
@@ -193,18 +182,16 @@ export default function DashboardPage() {
       )}
 
       {/* Stat Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-6">
         {STAT_CARDS.map(({ key, label, icon: Icon, color }) => (
-          <Card key={key} className="border-border bg-card/40 backdrop-blur-md hover:border-muted-foreground/20 transition-all duration-300">
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-xs font-bold uppercase tracking-wider text-muted-foreground">{label}</CardTitle>
-              <div className={`p-1.5 rounded-lg ${color}`}>
-                <Icon className="w-4 h-4" />
-              </div>
-            </CardHeader>
-            <CardContent className="pt-2">
-              <div className="text-3xl font-extrabold tracking-tight">
-                {stats?.[key as StatKeys] ?? 0}
+          <Card key={key} className=" bg-card/40 backdrop-blur-md ">
+            <CardContent>
+              <CardTitle className="text-xs font-bold uppercase tracking-tight md:tracking-wider text-muted-foreground">{label}</CardTitle>
+              <div className="flex gap-4 mt-4">
+                <Icon className={`size-8 p-1.5 rounded-lg ${color}`} />
+                <div className="text-3xl font-extrabold tracking-tight">
+                  {stats?.[key as StatKeys] ?? 0}
+                </div>
               </div>
             </CardContent>
           </Card>
@@ -220,7 +207,7 @@ export default function DashboardPage() {
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
 
             {/* Avg Fit Score */}
-            <Card className="border-border bg-card/40 backdrop-blur-md">
+            <Card className=" bg-card/40 backdrop-blur-md">
               <CardHeader className="pb-2">
                 <CardTitle className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Average Profile Fit</CardTitle>
               </CardHeader>
@@ -244,7 +231,7 @@ export default function DashboardPage() {
             </Card>
 
             {/* Gemini usage stats */}
-            <Card className="border-border bg-card/40 backdrop-blur-md">
+            <Card className=" bg-card/40 backdrop-blur-md">
               <CardHeader className="pb-2">
                 <CardTitle className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Gemini LLM Quota Rate</CardTitle>
               </CardHeader>
@@ -270,7 +257,7 @@ export default function DashboardPage() {
           </div>
 
           {/* Jobs by Source distribution */}
-          <Card className="border-border bg-card/40 backdrop-blur-md">
+          <Card className=" bg-card/40 backdrop-blur-md">
             <CardHeader className="pb-2 flex flex-row items-center justify-between">
               <div className="space-y-1">
                 <CardTitle className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Jobs Distribution by Source</CardTitle>
@@ -295,14 +282,14 @@ export default function DashboardPage() {
           </Card>
 
           {/* Scraper Run Logs / Circuits Health */}
-          <Card className="border-border bg-card/40 backdrop-blur-md">
+          <Card className=" bg-card/40 backdrop-blur-md">
             <CardHeader className="pb-2">
               <CardTitle className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Scraper Health Logs</CardTitle>
             </CardHeader>
             <CardContent className="pt-2">
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
                 {stats?.scraperHealth && Object.entries(stats.scraperHealth).slice(0, 8).map(([name, h]) => (
-                  <div key={name} className="p-2 rounded-lg bg-muted/40 border border-border flex flex-col gap-1">
+                  <div key={name} className="p-2 rounded-lg bg-muted/40 border  flex flex-col gap-1">
                     <span className="capitalize font-bold text-foreground">{name}</span>
                     <div className="flex items-center gap-1 mt-0.5">
                       <span className={`h-1.5 w-1.5 rounded-full ${h.state === 'CLOSED' ? 'bg-emerald-500 animate-pulse' : 'bg-destructive'}`} />
@@ -321,14 +308,14 @@ export default function DashboardPage() {
 
           {/* Dream Company Alerts */}
           {dreamAlerts.length > 0 && (
-            <Card className="border-primary/25 bg-primary/5 backdrop-blur-md shadow-lg animate-pulse">
+            <Card className="border-primary/25 bg-primary/5 backdrop-blur-md shadow-lg">
               <CardHeader className="pb-2 flex flex-row items-center gap-2">
-                <Bell className="h-4 w-4 text-primary" />
+                <Bell className="h-4 w-4 text-primary animate-pulse" />
                 <CardTitle className="text-xs font-bold uppercase tracking-wider text-primary">Dream Company Alerts</CardTitle>
               </CardHeader>
               <CardContent className="space-y-3 pt-2">
                 {dreamAlerts.slice(0, 3).map((job) => (
-                  <div key={job.id} className="text-xs border-b border-border pb-2 last:border-0 last:pb-0">
+                  <div key={job.id} className="text-xs border-b  pb-2 last:border-0 last:pb-0">
                     <div className="flex justify-between items-center">
                       <span className="font-extrabold text-foreground uppercase truncate max-w-[140px]">{job.company}</span>
                       <Badge className="bg-primary/20 text-primary border-primary/30 text-[9px] px-1.5">{job.fitScore}% Fit</Badge>
@@ -344,7 +331,7 @@ export default function DashboardPage() {
           )}
 
           {/* Live Scoring Ticker */}
-          <Card className="border-border bg-card/40 backdrop-blur-md">
+          <Card className=" bg-card/40 backdrop-blur-md">
             <CardHeader className="pb-2 flex flex-row items-center justify-between">
               <div className="space-y-1">
                 <CardTitle className="text-xs font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
@@ -363,7 +350,7 @@ export default function DashboardPage() {
                       liveTicker.map((item, idx) => (
                         <div
                           key={`${item.jobId}-${idx}`}
-                          className="p-2.5 rounded-lg bg-muted/40 border border-border flex justify-between items-start gap-2 animate-in fade-in slide-in-from-left-2 duration-300"
+                          className="p-2.5 rounded-lg bg-muted/40 border  flex justify-between items-start gap-2 animate-in fade-in slide-in-from-left-2 duration-300"
                         >
                           <div className="space-y-1 min-w-0">
                             <p className="font-extrabold text-[10px] text-muted-foreground uppercase truncate">{item.company}</p>
@@ -394,15 +381,15 @@ export default function DashboardPage() {
       {/* Quick Access links */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <Link href="/jobs?status=SCORED">
-          <Card className="border-border bg-card/30 hover:bg-card/50 hover:border-border transition-all duration-300 cursor-pointer group">
-            <CardContent className="p-5 flex items-center justify-between">
+          <Card className=" bg-card/30 hover:bg-card/50 hover: transition-all duration-300 cursor-pointer group">
+            <CardContent className="flex items-center justify-between">
               <div>
                 <p className="text-sm font-bold text-foreground group-hover:text-primary transition-colors">Review Scored Jobs</p>
                 <p className="text-xs text-muted-foreground mt-1">
                   {stats?.scored || 0} jobs awaiting approval.
                 </p>
               </div>
-              <Button variant="outline" size="icon" className="shrink-0 border-border hover:bg-muted cursor-pointer">
+              <Button variant="outline" size="icon" className="shrink-0  hover:bg-muted cursor-pointer">
                 <ArrowRight className="w-4 h-4" />
               </Button>
             </CardContent>
@@ -410,15 +397,15 @@ export default function DashboardPage() {
         </Link>
 
         <Link href="/onboarding">
-          <Card className="border-border bg-card/30 hover:bg-card/50 hover:border-border transition-all duration-300 cursor-pointer group">
-            <CardContent className="p-5 flex items-center justify-between">
+          <Card className=" bg-card/30 hover:bg-card/50 hover: transition-all duration-300 cursor-pointer group">
+            <CardContent className="flex items-center justify-between">
               <div>
                 <p className="text-sm font-bold text-foreground group-hover:text-primary transition-colors">Onboarding Wizard</p>
                 <p className="text-xs text-muted-foreground mt-1">
                   Recalibrate profile and seed the AnswerBank.
                 </p>
               </div>
-              <Button variant="outline" size="icon" className="shrink-0 border-border hover:bg-muted cursor-pointer">
+              <Button variant="outline" size="icon" className="shrink-0  hover:bg-muted cursor-pointer">
                 <ArrowRight className="w-4 h-4" />
               </Button>
             </CardContent>

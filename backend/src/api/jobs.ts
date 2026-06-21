@@ -5,6 +5,7 @@ import { logger } from '../core/logger';
 import { z } from 'zod';
 import { recordApproval, recordSkip } from '../services/ai-engine/feedback';
 import { getAllScraperHealth } from '../core/scraperHealth';
+import { checkScoreDrift } from '../services/ai-engine/scorer';
 
 export const jobsRouter = Router();
 
@@ -152,20 +153,6 @@ jobsRouter.get('/detect', async (req: Request, res: Response) => {
   }
 });
 
-// GET /api/jobs/:id — get single job with full details
-jobsRouter.get('/:id', async (req: Request, res: Response) => {
-  try {
-    const job = await prisma.job.findUnique({
-      where: { id: req.params.id as string },
-      include: { application: true },
-    });
-    if (!job) return res.status(404).json({ error: 'Job not found' });
-    res.json(job);
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to fetch job' });
-  }
-});
-
 // PATCH /api/jobs/bulk-status — bulk update status of multiple jobs
 const bulkUpdateStatusSchema = z.object({
   ids: z.array(z.string()),
@@ -219,10 +206,17 @@ jobsRouter.patch('/bulk-status', async (req: Request, res: Response) => {
           whySkip || analysis?.whySkip,
           userComment
         );
+        // Task 26: Check for score drift after every skip signal
+        checkScoreDrift().catch((e) => logger.warn('checkScoreDrift error (non-fatal)', { error: e }));
       } else if (status === 'BLACKLISTED') {
-        await prisma.settings.updateMany({
-          data: { blacklistedCompanies: { push: job.company } },
-        });
+        // Check before push to avoid duplicates (Task 7)
+        const settings = await prisma.settings.findFirst();
+        if (settings && !settings.blacklistedCompanies.includes(job.company)) {
+          await prisma.settings.update({
+            where: { id: settings.id },
+            data: { blacklistedCompanies: { push: job.company } },
+          });
+        }
       }
     }
 
@@ -290,10 +284,14 @@ jobsRouter.patch('/:id/status', async (req: Request, res: Response) => {
         userComment
       );
     } else if (status === 'BLACKLISTED') {
-      // Add company to blacklist in settings
-      await prisma.settings.updateMany({
-        data: { blacklistedCompanies: { push: job.company } },
-      });
+      // Add company to blacklist — check before push to avoid duplicates (Task 7)
+      const settings = await prisma.settings.findFirst();
+      if (settings && !settings.blacklistedCompanies.includes(job.company)) {
+        await prisma.settings.update({
+          where: { id: settings.id },
+          data: { blacklistedCompanies: { push: job.company } },
+        });
+      }
     }
 
     res.json(job);
@@ -321,9 +319,9 @@ jobsRouter.post('/scrape', async (req: Request, res: Response) => {
 jobsRouter.post('/scrapers/:name/reset', async (req: Request, res: Response) => {
   try {
     const { name } = req.params;
-    const { recordSuccess } = require('../core/scraperHealth');
-    await recordSuccess(name);
-    res.json({ message: `Circuit breaker reset for ${name}` });
+    const { manualReset } = require('../core/scraperHealth');
+    await manualReset(name);
+    res.json({ message: `Circuit breaker manually reset to CLOSED for ${name}` });
   } catch (error) {
     logger.error(`Failed to reset circuit breaker for ${name}`, { error });
     res.status(500).json({ error: 'Failed to reset circuit breaker' });
@@ -377,6 +375,20 @@ jobsRouter.post('/queues/:name/drain', async (req: Request, res: Response) => {
   } catch (error) {
     logger.error(`Failed to drain queue ${name}`, { error });
     res.status(500).json({ error: 'Failed to drain queue' });
+  }
+});
+
+// GET /api/jobs/:id — get single job with full details
+jobsRouter.get('/:id', async (req: Request, res: Response) => {
+  try {
+    const job = await prisma.job.findUnique({
+      where: { id: req.params.id as string },
+      include: { application: true },
+    });
+    if (!job) return res.status(404).json({ error: 'Job not found' });
+    res.json(job);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch job' });
   }
 });
 

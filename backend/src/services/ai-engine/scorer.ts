@@ -1,8 +1,9 @@
 import { flashModel, generateEmbedding, parseGeminiJSON, cosineSimilarity, callWithRetry } from '../../core/gemini';
 import { prisma } from '../../core/prisma';
 import { logger } from '../../core/logger';
-import { getFeedbackCalibration } from './feedback';
+import { getFeedbackCalibration, FeedbackSignal } from './feedback';
 import { getOrClassifyCompanyStatus, CompanyStatus } from './companyDirectory';
+import { redis } from '../../core/redis';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -51,6 +52,80 @@ function shouldPrescreen(title: string): boolean {
 function isDreamCompany(company: string, dreamList: string[]): boolean {
   const lower = company.toLowerCase().trim();
   return dreamList.some((d) => lower.includes(d.toLowerCase().trim()));
+}
+
+/**
+ * Task 25: Derive a soft blocklist from skip signals in Redis.
+ * Words appearing in 3+ skipped job titles are returned as soft-block terms.
+ * Result is cached for 1 hour.
+ */
+export async function getDynamicBlockTerms(): Promise<string[]> {
+  try {
+    const cached = await redis.get('dynamic:block_terms');
+    if (cached) return JSON.parse(cached);
+
+    const skippedRaw = await redis.lrange('feedback:skipped', 0, 29);
+    const skipped = skippedRaw.map((s) => JSON.parse(s) as FeedbackSignal);
+
+    const wordFreq: Record<string, number> = {};
+    skipped.forEach((s) => {
+      s.title.toLowerCase().split(/\s+/).forEach((w) => {
+        if (w.length > 4) wordFreq[w] = (wordFreq[w] || 0) + 1;
+      });
+    });
+
+    const blockTerms = Object.entries(wordFreq)
+      .filter(([_, count]) => count >= 3)
+      .map(([term]) => term);
+
+    await redis.set('dynamic:block_terms', JSON.stringify(blockTerms), 'EX', 3600);
+    logger.debug(`Dynamic block terms derived: ${blockTerms.join(', ')}`);
+    return blockTerms;
+  } catch (err) {
+    logger.warn('getDynamicBlockTerms failed', { error: err });
+    return [];
+  }
+}
+
+/**
+ * Task 26: Detect systematic score drift and persist a warning in Redis.
+ * Called when there are enough feedback signals to identify if the scoring
+ * model is consistently conservative (user approves low-scored jobs).
+ */
+export async function checkScoreDrift(): Promise<void> {
+  try {
+    const [approvedRaw, skippedRaw] = await Promise.all([
+      redis.lrange('feedback:approved', 0, 29),
+      redis.lrange('feedback:skipped', 0, 29),
+    ]);
+
+    const approvedSignals = approvedRaw.map((s) => JSON.parse(s) as FeedbackSignal);
+    const skippedSignals = skippedRaw.map((s) => JSON.parse(s) as FeedbackSignal);
+
+    if (approvedSignals.length < 5) return; // Not enough data
+
+    const approvedAvgScore = approvedSignals.reduce((a, s) => a + s.score, 0) / approvedSignals.length;
+    const skippedAvgScore = skippedSignals.length > 0
+      ? skippedSignals.reduce((a, s) => a + s.score, 0) / skippedSignals.length
+      : 0;
+
+    if (approvedAvgScore < 65) {
+      const warning = {
+        type: 'CONSERVATIVE',
+        approvedAvg: approvedAvgScore,
+        skippedAvg: skippedAvgScore,
+        message: `Approving jobs scored ${approvedAvgScore.toFixed(0)} avg — consider lowering fitScoreThreshold or recalibrating weights`,
+        timestamp: Date.now(),
+      };
+      await redis.set('scoring:drift_warning', JSON.stringify(warning), 'EX', 86400);
+      logger.warn(`Score drift detected: approved avg ${approvedAvgScore.toFixed(0)}/100 (threshold: 65)`);
+    } else {
+      // Clear stale warnings if scoring is healthy
+      await redis.del('scoring:drift_warning');
+    }
+  } catch (err) {
+    logger.warn('checkScoreDrift failed', { error: err });
+  }
 }
 
 /**
@@ -205,13 +280,14 @@ export async function scoreJob(jobId: string): Promise<FitAnalysis | null> {
 }
 
 /**
- * Batch score up to 3 jobs in a single call to Gemini.
+ * Task 8: Score a raw job description text without any DB reads/writes.
+ * Used by the simulate-score endpoint to avoid the ghost-record problem.
  */
-export async function scoreJobsBatch(
-  jobIds: string[]
-): Promise<{ jobId: string; analysis: FitAnalysis | null }[]> {
-  const results: { jobId: string; analysis: FitAnalysis | null }[] = [];
-
+export async function scoreJDText(
+  title: string,
+  company: string,
+  description: string
+): Promise<FitAnalysis | null> {
   try {
     const [settings, profile] = await Promise.all([
       prisma.settings.findFirst(),
@@ -233,6 +309,154 @@ export async function scoreJobsBatch(
     const mncList = settings?.mncCompanies || [];
     const startupList = settings?.tier1Startups || [];
     const serviceList = settings?.serviceCompanies || [];
+
+    let candidateProfileText = '';
+    if (profile) {
+      const structuredSummary = formatProfileJsonToText(profile);
+      candidateProfileText = structuredSummary || buildProfileText(profile).slice(0, 3000);
+    } else {
+      candidateProfileText = `Candidate: Rishav Sharma. B.Tech NIT Durgapur. Skills: Java, C++, Spring Boot, Node.js, WebSockets, Postgres, Redis.`;
+    }
+
+    const isTargetCompany = isDreamCompany(company, targetCompanies);
+    const matchesBlocklist = shouldPrescreen(title);
+    const knockout = checkKnockout(title, description, minYoeCutoff, minSalaryCutoff);
+
+    if (knockout.knockedOut) {
+      return {
+        score: 0,
+        dimensions: { techStack: 0, seniorityFit: 0, domainFit: 0, compensationFit: 0, companyTier: 0 },
+        verdict: 'Weak Match',
+        strengths: [],
+        gaps: [knockout.reason || 'Requirement mismatch'],
+        reasons: [`Knocked out: ${knockout.reason}`],
+        whyApply: 'Not applicable — requirement mismatch',
+        whySkip: knockout.reason || 'Requirement mismatch',
+        keywordsMatched: [],
+        recommendation: 'Skip — requirement mismatch',
+        isTargetCompany,
+        prescreenPassed: false,
+      };
+    }
+
+    const companyStatus = await getOrClassifyCompanyStatus(company, mncList, startupList, serviceList);
+
+    const jobForGemini = {
+      id: 'simulation',
+      title,
+      company,
+      description: extractJDSignal(description),
+      salaryRaw: null as string | null,
+      embeddingScore: 50, // no profile embedding for simulation
+      companyStatus,
+      isTargetCompany,
+      titleMatchesBlocklist: matchesBlocklist,
+      seniorityPenalty: knockout.seniorityPenalty,
+    };
+
+    const prompt = buildBatchScoringPrompt(
+      [jobForGemini],
+      candidateProfileText,
+      calibration,
+      dimensionWeights,
+      minYoeCutoff,
+      minSalaryCutoff
+    );
+
+    const apiResult = await callWithRetry(
+      () => flashModel.generateContent(prompt),
+      4,
+      'scoreJDText:simulation'
+    );
+
+    let parsedBatch: any[] = [];
+    try {
+      parsedBatch = parseGeminiJSON<any[]>(apiResult.response.text());
+    } catch (parseErr) {
+      logger.error('Failed to parse simulation scorer JSON response', { parseErr });
+      return null;
+    }
+
+    const rawAnalysis = Array.isArray(parsedBatch) ? parsedBatch[0] : null;
+    if (!rawAnalysis) return null;
+
+    if (matchesBlocklist && !isTargetCompany) {
+      rawAnalysis.dimensions.domainFit = Math.min(rawAnalysis.dimensions.domainFit, 20);
+    }
+    if (knockout.seniorityPenalty !== undefined) {
+      rawAnalysis.dimensions.seniorityFit = Math.min(rawAnalysis.dimensions.seniorityFit, knockout.seniorityPenalty);
+    }
+
+    const weights = validateAndNormalizeWeights(rawAnalysis.adjustedWeights, dimensionWeights);
+    const sum = (weights.techStack || 0) + (weights.seniorityFit || 0) + (weights.domainFit || 0) + (weights.compensationFit || 0) + (weights.companyTier || 0);
+    const scale = sum > 0 ? 1 / sum : 1;
+
+    let finalScore = Math.round(
+      ((rawAnalysis.dimensions.techStack * (weights.techStack || 0.15) +
+        rawAnalysis.dimensions.seniorityFit * (weights.seniorityFit || 0.30) +
+        rawAnalysis.dimensions.domainFit * (weights.domainFit || 0.10) +
+        rawAnalysis.dimensions.compensationFit * (weights.compensationFit || 0.25) +
+        rawAnalysis.dimensions.companyTier * (weights.companyTier || 0.20)) * scale)
+    );
+
+    if (isTargetCompany && !(rawAnalysis.redFlags?.length > 0)) {
+      finalScore = Math.min(100, finalScore + 10);
+    }
+    if (rawAnalysis.redFlags?.length > 0) {
+      finalScore = Math.min(60, finalScore);
+    }
+
+    return {
+      ...rawAnalysis,
+      prescreenPassed: true,
+      isTargetCompany,
+      score: Math.max(0, Math.min(100, finalScore)),
+    } as FitAnalysis;
+  } catch (err) {
+    logger.error('scoreJDText failed', { error: err });
+    return null;
+  }
+}
+
+/**
+ * Batch score up to 3 jobs in a single call to Gemini.
+ */
+export async function scoreJobsBatch(
+  jobIds: string[]
+): Promise<{ jobId: string; analysis: FitAnalysis | null }[]> {
+  const results: { jobId: string; analysis: FitAnalysis | null }[] = [];
+
+  try {
+    const [settings, profile] = await Promise.all([
+      prisma.settings.findFirst(),
+      prisma.userProfile.findFirst(),
+    ]);
+
+    // Task 6: Auto-generate profileJson if missing to ensure quality scoring
+    if (profile && !profile.profileJson) {
+      logger.warn('profileJson is null — scoring quality may degrade. Auto-generating...');
+      await ensureProfileJson(profile);
+      // Refresh profile with newly generated json
+      const refreshed = await prisma.userProfile.findFirst();
+      if (refreshed) Object.assign(profile, refreshed);
+    }
+
+    const targetCompanies = settings?.targetCompanies || [];
+    const minYoeCutoff = settings?.minYoeCutoff ?? 3;
+    const minSalaryCutoff = settings?.minSalaryCutoff ?? 15;
+    const dimensionWeights = (settings?.dimensionWeights as Record<string, number> | null) || {
+      techStack: 0.15,
+      seniorityFit: 0.30,
+      domainFit: 0.10,
+      compensationFit: 0.25,
+      companyTier: 0.20,
+    };
+
+    const calibration = await getFeedbackCalibration();
+    const mncList = settings?.mncCompanies || [];
+    const startupList = settings?.tier1Startups || [];
+    const serviceList = settings?.serviceCompanies || [];
+
 
     // Format Candidate Profile Text once for the batch
     let candidateProfileText = '';
@@ -368,7 +592,8 @@ ${strippedResume.slice(0, 3000)}
       calibration,
       dimensionWeights,
       minYoeCutoff,
-      minSalaryCutoff
+      minSalaryCutoff,
+      profile  // Task 29: pass profile for dynamic fresh-grad context
     );
 
     const apiResult = await callWithRetry(
@@ -468,6 +693,30 @@ ${strippedResume.slice(0, 3000)}
       });
 
       logger.info(`Scored job ${jobId} (${jobData.title} @ ${jobData.company}): ${finalAnalysis.score}/100 [${finalAnalysis.verdict}]`);
+
+      // Task 17: Post-scoring semantic dedup — check for similar jobs from same company
+      try {
+        const scoredJob = await prisma.job.findUnique({ where: { id: jobId }, select: { embedding: true } });
+        if (scoredJob?.embedding && scoredJob.embedding.length > 0) {
+          const vectorStr = `[${scoredJob.embedding.join(',')}]`;
+          const potentialDups = await prisma.$queryRaw<{ id: string }[]>`
+            SELECT id FROM "Job"
+            WHERE company = ${jobData.company}
+              AND id != ${jobId}
+              AND status = 'SCORED'
+              AND "scrapedAt" > NOW() - INTERVAL '7 days'
+              AND 1 - (embedding_vec <=> cast(${vectorStr} as vector)) > 0.95
+            LIMIT 1
+          `;
+          if (potentialDups.length > 0) {
+            logger.info(`Job ${jobId} ("${jobData.title}") is likely a cross-source duplicate of ${potentialDups[0].id} — marking SKIPPED`);
+            await prisma.job.update({ where: { id: jobId }, data: { status: 'SKIPPED', fitScore: -2 } });
+          }
+        }
+      } catch (dupErr) {
+        logger.debug('Semantic dedup check failed (non-fatal)', { error: dupErr });
+      }
+
       results.push({ jobId, analysis: finalAnalysis });
     }
   } catch (err) {
@@ -501,7 +750,8 @@ function buildBatchScoringPrompt(
   calibration: string,
   weights: Record<string, number>,
   minYoeCutoff: number,
-  minSalaryCutoff: number
+  minSalaryCutoff: number,
+  profile?: any
 ): string {
   let jobsText = '';
   jobs.forEach((job, idx) => {
@@ -565,9 +815,13 @@ For EACH job in the list, evaluate the candidate's fit based on:
    - Score <40: JD requires tech he doesn't have (Python ML, iOS, Android, etc.).
 
 3. **Dimension 2: Seniority Fit (weight: ${weights.seniorityFit * 100}%)**
-   - **CRITICAL EXPERIENCE FIT CALIBRATION**: Rishav is graduating in June 2026 and currently holds an intern role handling high-impact distributed systems (PTP, WebSockets).
+   - **CRITICAL EXPERIENCE FIT CALIBRATION**:
+${profile?.profileJson
+  ? `   - ${profile.profileJson.facts?.name || 'The candidate'} is a final-year B.Tech student graduating ${profile.profileJson.facts?.graduationDate || 'June 2026'}. Current role: ${profile.profileJson.facts?.currentRole || 'Intern at Samsung R&D'}. This internship involves production-grade distributed systems work (PTP clock sync, audio codecs, FEC protocols, WebSockets at scale) — treat it as equivalent to 1 year of backend production experience.`
+  : '   - Rishav is graduating in June 2026 and currently holds an intern role handling high-impact distributed systems (PTP, WebSockets).'}
    - Treat "0-1 YOE" or "Fresher/New Grad" or "Intern/PPO" as a **100 score**.
    - Roles requiring "1-2 YOE" can receive a score of **80-95** (as his Samsung internship is real production work).
+   - Any role explicitly targeting "0-3 YOE" or "New Grad" or "Fresher" should score seniorityFit >= 85.
    - Roles requiring **${minYoeCutoff}+ years of full-time experience** must receive a score **below 40**.
 
 4. **Dimension 3: Domain Fit (weight: ${weights.domainFit * 100}%)**
@@ -636,6 +890,41 @@ Respond with ONLY a valid JSON array of objects (no markdown, no extra text, jus
 }
 
 // ─── Profile Embedding & Reseeding ────────────────────────────────────────────
+
+/**
+ * Task 6: Auto-generate structured profileJson from the base LaTeX resume if missing.
+ * Called at the start of scoreJobsBatch() to ensure scoring always has rich structured data.
+ */
+export async function ensureProfileJson(profile: { id: string; profileJson: any; baseResumeLatex: string }): Promise<void> {
+  if (profile.profileJson) return; // already exists
+  if (!profile.baseResumeLatex || profile.baseResumeLatex.trim().startsWith('% Resume not found')) {
+    logger.warn('ensureProfileJson: skipping — baseResumeLatex is empty or placeholder');
+    return;
+  }
+
+  logger.info('profileJson is missing — auto-generating from LaTeX resume...');
+  const prompt = `Parse this LaTeX resume and return ONLY a JSON object with these keys:
+{
+  "facts": { "name": string, "email": string, "phone": string, "location": string, "graduationDate": string, "college": string, "degree": string, "cgpa": string, "currentRole": string, "noticePeriod": string },
+  "skills": [{ "name": string, "level": "strong|comfortable|familiar", "context": string }],
+  "preferences": { "rolePreferences": { "primary": string[], "avoid": string[] }, "domainInterests": string[], "dealBreakers": string[] }
+}
+
+Resume:
+${profile.baseResumeLatex.slice(0, 6000)}`;
+
+  try {
+    const result = await callWithRetry(() => flashModel.generateContent(prompt), 3, 'generateProfileJson');
+    const profileJson = parseGeminiJSON<Record<string, unknown>>(result.response.text());
+    await prisma.userProfile.update({
+      where: { id: profile.id },
+      data: { profileJson: profileJson as any },
+    });
+    logger.info('✅ profileJson auto-generated and saved from LaTeX resume');
+  } catch (err) {
+    logger.warn('Failed to auto-generate profileJson from resume', { error: err });
+  }
+}
 
 export async function ensureProfileEmbedding(): Promise<void> {
   const profile = await prisma.userProfile.findFirst();

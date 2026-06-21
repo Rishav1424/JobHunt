@@ -123,14 +123,24 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
 
             {/* Actions */}
             <div className="flex items-center sm:flex-row gap-3 shrink-0 self-end md:self-start">
-              <a
-                href={job.url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold border border-border text-foreground hover:bg-muted rounded-lg transition-all"
-              >
-                <ExternalLink className="w-3.5 h-3.5" /> View Listing
-              </a>
+              {(() => {
+                let applyUrl = job.url;
+                try {
+                  const urlObj = new URL(job.applyUrl || job.url);
+                  urlObj.searchParams.set('__jh', job.id);
+                  applyUrl = urlObj.toString();
+                } catch {}
+                return (
+                  <a
+                    href={applyUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold border border-border text-foreground hover:bg-muted rounded-lg transition-all"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" /> View Listing
+                  </a>
+                );
+              })()}
               {job.status === 'SCORED' && (
                 <Button
                   onClick={handleApprove}

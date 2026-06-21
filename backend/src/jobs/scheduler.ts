@@ -39,6 +39,12 @@ export async function startScheduler(): Promise<void> {
     logger.info('Running initial scrape on startup...');
     await scrapingQueue.add('startup-scrape', {}, { delay: 5000 }); // 5s delay to let server start
   }
+
+  // Task 28: Weekly AnswerBank pruning (fire on startup, then weekly)
+  const { pruneAnswerBank } = require('../services/ai-engine/answerBankService');
+  pruneAnswerBank()
+    .then((r: { removed: number }) => logger.info(`Startup AnswerBank prune: removed ${r.removed} entries`))
+    .catch((e: any) => logger.warn('AnswerBank startup prune failed', { error: e }));
 }
 
 /**

@@ -3,6 +3,7 @@ import { JobSource, JobListing, ScraperQuery } from './base';
 import { logger } from '../../core/logger';
 import { config } from '../../core/config';
 import { browserPool } from './browserPool';
+import { fetchJobDetails } from './detailFetcher';
 
 const USER_AGENTS = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
@@ -175,12 +176,29 @@ export class NaukriScraper extends JobSource {
             const { location, isRemote } = this.normalizeLocation(locationStr);
             const { min: salaryMin, max: salaryMax } = this.parseSalaryIndia(salaryStr);
 
+            // Task 15: Fetch detail page for short/missing descriptions
+            let description = job.jobDescription || '';
+            if (!description || description.length < 400) {
+              try {
+                const details = await fetchJobDetails(url);
+                if (details?.description && details.description.length > description.length) {
+                  description = details.description;
+                  logger.debug(`Naukri: enriched description for "${title}" via detail fetch`);
+                }
+              } catch {
+                /* use what we have */
+              }
+            }
+            if (!description) {
+              description = `${title} at ${company}. Experience: ${expStr}. Salary: ${salaryStr}`;
+            }
+
             listings.push({
               title,
               company,
               location,
               isRemote,
-              description: job.jobDescription || `${title} at ${company}. Experience: ${expStr}. Salary: ${salaryStr}`,
+              description,
               url,
               salaryMin,
               salaryMax,

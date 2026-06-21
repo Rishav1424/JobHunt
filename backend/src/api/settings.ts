@@ -158,6 +158,11 @@ settingsRouter.patch('/profile', async (req: Request, res: Response) => {
         logger.error('Failed to recompute cluster embeddings', { err })
       );
     } else if (data.profileJson) {
+      // Task 27: Also recompute flat profile embedding when profileJson changes
+      // (previously only cluster embeddings were refreshed, leaving profileEmbedding stale)
+      ensureProfileEmbedding().catch((err: any) =>
+        logger.error('Failed to recompute profile embedding on profileJson change', { err })
+      );
       const { recomputeClusterEmbeddings } = require('../services/ai-engine/scorer');
       recomputeClusterEmbeddings(updated.id).catch((err: any) =>
         logger.error('Failed to recompute cluster embeddings', { err })
@@ -198,20 +203,12 @@ settingsRouter.post('/simulate-score', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Title and Description are required' });
     }
 
-    // Build a transient job object
-    const tempJob = {
-      id: 'simulation',
-      title,
-      company: company || 'Simulation Corp',
-      description,
-      location: 'Remote',
-      isRemote: true,
-      salaryType: 'UNKNOWN' as const,
-      source: 'SIMULATOR',
-    };
-
-    const { scoreJob } = require('../services/ai-engine/scorer');
-    const result = await scoreJob(tempJob as any);
+    // Task 8: Use scoreJDText() which does NOT attempt a DB lookup for a ghost record
+    const { scoreJDText } = require('../services/ai-engine/scorer');
+    const result = await scoreJDText(title, company || 'Simulation Corp', description);
+    if (!result) {
+      return res.status(422).json({ error: 'Scoring produced no result — description may be too short or malformed' });
+    }
     res.json(result);
   } catch (error) {
     logger.error('Failed to simulate job score', { error });
@@ -264,5 +261,21 @@ settingsRouter.post('/onboard', async (req: Request, res: Response) => {
   } catch (error) {
     logger.error('Failed to submit onboarding data', { error });
     res.status(500).json({ error: 'Failed to save onboarding data' });
+  }
+});
+
+// GET /api/settings/scoring-drift — Task 26: expose drift warning if scoring is miscalibrated
+settingsRouter.get('/scoring-drift', async (_req: Request, res: Response) => {
+  try {
+    const { redis } = require('../core/redis');
+    const raw = await redis.get('scoring:drift_warning');
+    if (!raw) {
+      return res.json({ driftDetected: false });
+    }
+    const warning = JSON.parse(raw);
+    res.json({ driftDetected: true, ...warning });
+  } catch (err) {
+    logger.warn('Failed to fetch scoring drift warning', { error: err });
+    res.json({ driftDetected: false });
   }
 });

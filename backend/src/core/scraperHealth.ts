@@ -116,6 +116,7 @@ export async function recordFailure(name: string, reason: string): Promise<void>
 
 /**
  * Get health status for all scrapers (for the health API).
+ * Uses mget batching for O(1) round trips instead of 3 * N serial calls (Task 11).
  */
 export async function getAllScraperHealth(): Promise<Record<string, ScraperHealth>> {
   let scraperNames = ['adzuna', 'remoteok', 'wellfound', 'instahyre', 'linkedin', 'naukri', 'ats', 'ycombinator'];
@@ -125,24 +126,62 @@ export async function getAllScraperHealth(): Promise<Record<string, ScraperHealt
   } catch (err) {
     logger.warn('Failed to dynamically load ALL_SCRAPERS keys, using defaults', { error: err });
   }
-  const result: Record<string, ScraperHealth> = {};
 
-  for (const name of scraperNames) {
-    try {
-      const [stateRaw, failuresRaw, openedAtRaw] = await Promise.all([
-        redis.get(key(name, 'state')),
-        redis.get(key(name, 'failures')),
-        redis.get(key(name, 'openedAt')),
-      ]);
+  // Build all keys in one pass and fetch in a single mget round trip
+  const allKeys = scraperNames.flatMap((n) => [
+    key(n, 'state'),
+    key(n, 'failures'),
+    key(n, 'openedAt'),
+  ]);
+
+  const result: Record<string, ScraperHealth> = {};
+  try {
+    const values = await redis.mget(...allKeys); // 1 round trip instead of 3*N
+    scraperNames.forEach((name, i) => {
+      const offset = i * 3;
       result[name] = {
-        state: (stateRaw as CircuitState) || 'CLOSED',
-        failures: parseInt(failuresRaw || '0', 10),
-        openedAt: openedAtRaw ? parseInt(openedAtRaw, 10) : undefined,
+        state: (values[offset] as CircuitState) || 'CLOSED',
+        failures: parseInt(values[offset + 1] || '0', 10),
+        openedAt: values[offset + 2] ? parseInt(values[offset + 2]!, 10) : undefined,
       };
-    } catch {
-      result[name] = { state: 'CLOSED', failures: 0 };
+    });
+  } catch (err) {
+    logger.warn('getAllScraperHealth mget failed, falling back to individual queries', { error: err });
+    for (const name of scraperNames) {
+      try {
+        const [stateRaw, failuresRaw, openedAtRaw] = await Promise.all([
+          redis.get(key(name, 'state')),
+          redis.get(key(name, 'failures')),
+          redis.get(key(name, 'openedAt')),
+        ]);
+        result[name] = {
+          state: (stateRaw as CircuitState) || 'CLOSED',
+          failures: parseInt(failuresRaw || '0', 10),
+          openedAt: openedAtRaw ? parseInt(openedAtRaw, 10) : undefined,
+        };
+      } catch {
+        result[name] = { state: 'CLOSED', failures: 0 };
+      }
     }
   }
 
   return result;
+}
+
+/**
+ * Manually reset a scraper circuit breaker to CLOSED state.
+ * Distinct from recordSuccess() which implies the scraper actually ran successfully.
+ */
+export async function manualReset(name: string): Promise<void> {
+  try {
+    await Promise.all([
+      redis.set(key(name, 'state'), 'CLOSED', 'EX', KEY_TTL_S),
+      redis.set(key(name, 'failures'), '0', 'EX', KEY_TTL_S),
+      redis.del(key(name, 'openedAt')),
+    ]);
+    logger.info(`Circuit breaker [${name}]: Manually reset to CLOSED by admin`);
+  } catch (err) {
+    logger.warn(`Circuit breaker manualReset failed for [${name}]`, { error: err });
+    throw err;
+  }
 }

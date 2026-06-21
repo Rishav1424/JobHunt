@@ -23,13 +23,15 @@ import {
   Search,
   ChevronDown,
   ChevronUp,
-  Cpu
+  Cpu,
+  Filter
 } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Field } from '@/components/ui/field';
 import { Label } from '@/components/ui/label';
+import { InputGroup, InputGroupAddon, InputGroupInput } from '@/components/ui/input-group';
 
 interface ScraperHealth {
   state: 'CLOSED' | 'OPEN' | 'HALF-OPEN';
@@ -339,7 +341,7 @@ export default function ScrapersPage() {
 
         {/* Real-time Logs Terminal */}
         <Card>
-          <CardHeader className="border-b flex flex-row items-center justify-between ">
+          <CardHeader className="border-b flex  items-center justify-between ">
             <div className="flex items-center gap-4">
               <Terminal className="h-4.5 w-4.5 text-primary" />
               <div>
@@ -375,12 +377,17 @@ export default function ScrapersPage() {
               </Select>
 
               {/* Search input */}
-              <Input
-                type="text"
-                placeholder="Filter logs..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-              />
+              <InputGroup className="w-auto">
+                <InputGroupAddon>
+                  <Filter />
+                </InputGroupAddon>
+                <InputGroupInput
+                  type="text"
+                  placeholder="Filter logs..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                />
+              </InputGroup>
 
               {/* Controls */}
               <Button
@@ -389,11 +396,11 @@ export default function ScrapersPage() {
                 onClick={() => setIsPaused(!isPaused)}
                 title={isPaused ? "Resume log stream" : "Pause log stream"}
               >
-                {isPaused ? <Play className="h-3.5 w-3.5 text-emerald-400" /> : <Pause className="h-3.5 w-3.5" />}
+                {isPaused ? <Play /> : <Pause />}
               </Button>
 
               <Button
-                variant="ghost"
+                variant="destructive"
                 size="icon"
                 onClick={() => setLogs([])}
                 title="Clear logs"
@@ -413,9 +420,9 @@ export default function ScrapersPage() {
 
           {!terminalCollapsed && (
             <>
-              <CardContent className="p-0">
+              <CardContent>
                 <ScrollArea className="h-72">
-                  <div className="w-full  font-mono text-xs rounded-b-xl border-t p-4 space-y-1.5 min-h-full">
+                  <div className="w-full font-mono text-xs p-4 space-y-1.5 min-h-full">
                     {filteredLogs.length === 0 ? (
                       <div className="italic text-center py-12">
                         {searchQuery ? "No logs matching search query." : isPaused ? "Logs paused. Click play to resume." : "No logs received yet. Run a scraper to see outputs here."}

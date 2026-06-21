@@ -63,6 +63,19 @@ function isCompanyBlocked(company: string, userBlacklist: string[]): boolean {
 }
 
 /**
+ * Task 16: Score the quality of a job description.
+ * Returns 0 (garbage), 0.5 (thin), or 1.0 (good) based on length and content markers.
+ */
+function descriptionQualityScore(text: string): number {
+  if (!text) return 0;
+  const cleaned = text.replace(/\s+/g, ' ').trim();
+  if (cleaned.length < 200) return 0;
+  if (cleaned.length < 500) return 0.5;
+  const hasTechTerms = /\b(api|backend|java|python|node|spring|react|database|system|microservice|engineer|develop|software)\b/i.test(cleaned);
+  return hasTechTerms ? 1.0 : 0.7;
+}
+
+/**
  * Run all enabled scrapers and persist new jobs to DB.
  * Returns count of new unique jobs added.
  */
@@ -185,7 +198,13 @@ async function persistListings(
       });
       if (existing) continue;
 
-      await prisma.job.create({
+      // Task 16: Check description quality before persisting
+      const quality = descriptionQualityScore(listing.description);
+      if (quality === 0) {
+        logger.debug(`Pre-filter: description too short/empty for "${listing.title}" (${listing.description.length} chars) — saving but skipping scoring`);
+      }
+
+      const created = await prisma.job.create({
         data: {
           title: listing.title,
           company: listing.company,
@@ -201,10 +220,11 @@ async function persistListings(
           source: listing.source,
           atsType: listing.atsType,
           dedupeHash,
-          status: 'NEW',
+          // quality === 0: save as NEW but don't queue for scoring (marked PENDING_ENRICH)
+          status: quality === 0 ? 'SKIPPED' : 'NEW',
         },
       });
-      count++;
+      if (quality > 0) count++; // Only count scoreable jobs as new
     } catch (err: unknown) {
       if ((err as { code?: string }).code !== 'P2002') {
         logger.error('Error persisting job listing', { error: err, title: listing.title });

@@ -14,6 +14,7 @@ export const QUEUE_NAMES = {
   SCRAPING: 'job-scraping',
   SCORING: 'job-scoring',
   RESUME: 'resume-compilation',
+  RECALIBRATION: 'weight-recalibration',
 } as const;
 
 // ─── Queues ───────────────────────────────────────────────────────────────────
@@ -44,6 +45,16 @@ export const resumeQueue = new Queue(QUEUE_NAMES.RESUME, {
     removeOnFail: 10,
     attempts: 2,
     backoff: { type: 'exponential', delay: 10000 },
+  },
+});
+
+export const recalibrationQueue = new Queue(QUEUE_NAMES.RECALIBRATION, {
+  connection: bullConnection,
+  defaultJobOptions: {
+    removeOnComplete: 5,
+    removeOnFail: 5,
+    attempts: 2,
+    backoff: { type: 'exponential', delay: 5000 },
   },
 });
 
@@ -123,7 +134,11 @@ export function createScrapingWorker(): Worker {
           const scoringJobs = chunks.map((chunkIds) => ({
             name: 'score-job-batch',
             data: { jobIds: chunkIds },
-            opts: { priority: 1 },
+            opts: {
+              priority: 1,
+              // Deterministic jobId prevents duplicate batch submissions (BullMQ dedup)
+              jobId: `batch-${chunkIds[0]}-${chunkIds[chunkIds.length - 1]}`,
+            },
           }));
 
           await scoringQueue.addBulk(scoringJobs);
@@ -202,20 +217,34 @@ export function createResumeWorker(): Worker {
   );
 }
 
+export function createRecalibrationWorker(): Worker {
+  return new Worker(
+    QUEUE_NAMES.RECALIBRATION,
+    async (job: Job) => {
+      logger.info('Running adaptive weight recalibration job...');
+      const { recalibrateWeights } = require('../services/ai-engine/feedback');
+      await recalibrateWeights();
+      return { success: true };
+    },
+    { connection: bullConnection, concurrency: 1 }
+  );
+}
+
 // ─── Graceful Shutdown ────────────────────────────────────────────────────────
 export function setupGracefulShutdown(
   scrapingWorker: Worker,
   scoringWorker: Worker,
-  resumeWorker: Worker
+  resumeWorker: Worker,
+  recalibrationWorker?: Worker
 ): void {
   const shutdown = async (signal: string) => {
     logger.info(`Received ${signal} — gracefully shutting down workers...`);
     try {
-      await Promise.all([
-        scrapingWorker.close(),
-        scoringWorker.close(),
-        resumeWorker.close(),
-      ]);
+      const workers = [scrapingWorker, scoringWorker, resumeWorker];
+      if (recalibrationWorker) {
+        workers.push(recalibrationWorker);
+      }
+      await Promise.all(workers.map(w => w.close()));
       logger.info('Workers closed cleanly');
       process.exit(0);
     } catch (err) {
@@ -239,6 +268,16 @@ export async function triggerManualScrape(targetScraperName?: string): Promise<v
 
 export async function triggerJobScore(jobId: string): Promise<void> {
   await prisma.job.update({ where: { id: jobId }, data: { status: 'SCORING' } });
-  await scoringQueue.add('score-job', { jobId }, { priority: 1 });
+  // BullMQ deduplicates by jobId — second add for same job is a no-op
+  await scoringQueue.add('score-job', { jobId }, { priority: 1, jobId: `score-${jobId}` });
   logger.info(`Manual score triggered for job ${jobId}`);
+}
+
+export async function triggerWeightRecalibration(): Promise<void> {
+  // Use a singleton jobId to prevent multiple simultaneous recalibrations
+  await recalibrationQueue.add('recalibrate-weights', {}, {
+    priority: 3,
+    jobId: 'recalibrate-singleton',
+  });
+  logger.info('Enqueued adaptive weight recalibration job');
 }

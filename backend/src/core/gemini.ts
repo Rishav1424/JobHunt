@@ -5,20 +5,45 @@ import { logger } from './logger';
 const genAI = new GoogleGenerativeAI(config.GEMINI_API_KEY);
 
 // ─── Rate Limiter (15 RPM = 1 req / 4s) ──────────────────────────────────────
-// Simple token-bucket: allows short bursts but enforces 15 RPM ceiling
+// Task 4: Redis-backed distributed sliding window limiter
+// Uses a sorted set (gemini:rate_limit) with timestamps as scores.
+// Falls back to in-process queue if Redis is unavailable.
 const RATE_LIMIT_RPM = 15;
 const MIN_INTERVAL_MS = Math.ceil((60 * 1000) / RATE_LIMIT_RPM); // 4000ms
+const RATE_LIMIT_KEY = 'gemini:rate_limit';
 
-let lastCallTime = 0;
+// Fallback in-process serializer (used when Redis is unavailable)
 let callQueue = Promise.resolve();
 
 async function rateLimit(): Promise<void> {
-  const now = Date.now();
-  const elapsed = now - lastCallTime;
-  if (elapsed < MIN_INTERVAL_MS) {
-    await new Promise((r) => setTimeout(r, MIN_INTERVAL_MS - elapsed));
+  try {
+    const { redis } = await import('./redis');
+    const now = Date.now();
+    const windowStart = now - 60_000;
+
+    // Remove calls older than 60 seconds
+    await redis.zremrangebyscore(RATE_LIMIT_KEY, '-inf', windowStart);
+
+    // Count calls in the current window
+    const count = await redis.zcard(RATE_LIMIT_KEY);
+
+    if (count >= RATE_LIMIT_RPM) {
+      // Calculate how long to wait for the oldest call to expire from the window
+      const oldest = await redis.zrange(RATE_LIMIT_KEY, 0, 0, 'WITHSCORES');
+      const oldestTs = oldest.length >= 2 ? parseInt(oldest[1], 10) : now - 60_000;
+      const waitMs = Math.max(0, oldestTs + 60_000 - now + 100);
+      logger.debug(`Gemini rate limit: ${count}/${RATE_LIMIT_RPM} RPM, waiting ${waitMs}ms...`);
+      await new Promise((r) => setTimeout(r, waitMs));
+    }
+
+    // Register this call in the sorted set with TTL
+    await redis.zadd(RATE_LIMIT_KEY, now, `${now}-${Math.random()}`);
+    await redis.expire(RATE_LIMIT_KEY, 65); // auto-expire set after 65s
+  } catch (redisErr) {
+    // Fallback: simple in-process delay
+    logger.debug('Gemini rate limiter Redis unavailable, using in-process fallback', { error: redisErr });
+    await new Promise((r) => setTimeout(r, MIN_INTERVAL_MS));
   }
-  lastCallTime = Date.now();
 }
 
 // ─── Retry with Backoff ───────────────────────────────────────────────────────

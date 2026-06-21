@@ -1,5 +1,57 @@
 console.log('📝 JobHunt Content Script loaded.');
 
+(function detectJobHuntTrigger() {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const pendingJobId = params.get('__jh');
+    
+    if (pendingJobId) {
+      console.log(`Detected JobHunt trigger parameter: jobId = ${pendingJobId}`);
+      // 1. Clean URL immediately so param doesn't appear in form submissions
+      params.delete('__jh');
+      const clean = window.location.pathname + (params.toString() ? '?' + params : '');
+      window.history.replaceState({}, '', clean);
+
+      // 2. Persist to sessionStorage so it survives same-tab redirects
+      window.sessionStorage.setItem('__jh_jobid', pendingJobId);
+      window.sessionStorage.setItem('__jh_ts', String(Date.now()));
+
+      // 3. Notify background script
+      chrome.runtime.sendMessage({ action: 'set_pending_job', jobId: pendingJobId });
+    }
+  } catch (err) {
+    console.error('Error detecting JobHunt trigger parameter:', err);
+  }
+})();
+
+// Intercept clicks to propagate JobHunt parameter
+document.addEventListener('click', (e) => {
+  try {
+    const pendingJobId = window.sessionStorage.getItem('__jh_jobid');
+    const pendingTs = parseInt(window.sessionStorage.getItem('__jh_ts') || '0', 10);
+    const isRecent = Date.now() - pendingTs < 10 * 60 * 1000;
+
+    if (pendingJobId && isRecent) {
+      const link = (e.target as HTMLElement).closest('a[href]') as HTMLAnchorElement;
+      if (!link) return;
+      
+      const isApplyLink = /apply|application|submit|jobs\./i.test(link.href) ||
+                          /apply|start application/i.test(link.textContent || '');
+      
+      if (isApplyLink) {
+        const dest = new URL(link.href, window.location.origin);
+        if (!dest.searchParams.has('__jh')) {
+          dest.searchParams.set('__jh', pendingJobId);
+          link.href = dest.toString();
+          console.log(`Propagated JobHunt context to link: ${link.href}`);
+        }
+      }
+    }
+  } catch (err) {
+    console.error('Error in JobHunt click interceptor:', err);
+  }
+}, true);
+
 interface ScrapedField {
   id: string;
   name: string;
@@ -339,5 +391,129 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       sendResponse({ success: false, error: (err as Error).message });
     }
   }
-  return true; // Keep message channel open for async response
+
+  if (message.action === 'fill_login') {
+    try {
+      const emailInput = document.querySelector('input[type="email"], input[name*="email"]') as HTMLInputElement;
+      const passwordInput = document.querySelector('input[type="password"]') as HTMLInputElement;
+      if (emailInput && passwordInput) {
+        injectReactField(emailInput, message.creds.email);
+        injectReactField(passwordInput, message.creds.password);
+        sendResponse({ success: true });
+      } else {
+        sendResponse({ success: false, error: 'Email or Password input not found' });
+      }
+    } catch (err: any) {
+      sendResponse({ success: false, error: err.message });
+    }
+  }
+
+  if (message.action === 'check_jh_pending') {
+    const pendingJobId = window.sessionStorage.getItem('__jh_jobid');
+    const pendingTs = parseInt(window.sessionStorage.getItem('__jh_ts') || '0', 10);
+    const isRecent = Date.now() - pendingTs < 10 * 60 * 1000;
+    sendResponse({ jobId: isRecent ? pendingJobId : null });
+  }
+
+  return true;
+});
+
+function classifyPage(): 'login' | 'signup' | 'otp' | 'application_form' | 'intermediate' | 'confirmation' {
+  const bodyText = document.body.innerText.toLowerCase();
+  const hasPassword = !!document.querySelector('input[type="password"]');
+  const hasFileUpload = !!document.querySelector('input[type="file"]');
+
+  if (/verification code|otp|one.time/i.test(bodyText) &&
+      document.querySelector('input[maxlength="6"], input[maxlength="4"], input[name*="code"], input[id*="code"]')) {
+    return 'otp';
+  }
+
+  // Also classify magic link / verification link pending pages as 'otp' so we poll Gmail
+  if (/verification link|magic link|sent.?link|click.?link|check your email/i.test(bodyText) && !hasPassword && !hasFileUpload) {
+    return 'otp';
+  }
+
+  if (/create.?account|sign.?up|register/i.test(bodyText) && hasPassword) {
+    return 'signup';
+  }
+
+  if (hasPassword && !hasFileUpload) {
+    return 'login';
+  }
+
+  if (/application submitted|thank you for applying|we received/i.test(bodyText)) {
+    return 'confirmation';
+  }
+
+  if (hasFileUpload || (document.querySelectorAll('input, textarea').length > 4)) {
+    return 'application_form';
+  }
+
+  return 'intermediate';
+}
+
+async function handlePageAutomation() {
+  const pendingJobId = window.sessionStorage.getItem('__jh_jobid');
+  if (!pendingJobId) return;
+
+  const pageType = classifyPage();
+  console.log(`JobHunt page classified as: ${pageType}`);
+
+  if (pageType === 'login') {
+    const hostname = window.location.hostname;
+    chrome.storage.local.get([`creds_${hostname}`], (result) => {
+      const creds = result[`creds_${hostname}`];
+      const emailInput = document.querySelector('input[type="email"], input[name*="email"]') as HTMLInputElement;
+      const passwordInput = document.querySelector('input[type="password"]') as HTMLInputElement;
+      
+      if (emailInput && passwordInput) {
+        if (creds) {
+          injectReactField(emailInput, creds.email);
+          injectReactField(passwordInput, creds.password);
+          console.log(`Filled credentials automatically for ${hostname}`);
+        } else {
+          chrome.runtime.sendMessage({ action: 'login_needed', hostname });
+        }
+      }
+    });
+  } else if (pageType === 'otp') {
+    const otpInput = document.querySelector('input[maxlength="6"], input[maxlength="4"], input[name*="code"], input[id*="code"]') as HTMLInputElement;
+    
+    if (otpInput) {
+      chrome.runtime.sendMessage({ action: 'otp_checking' });
+      chrome.runtime.sendMessage({ action: 'get_gmail_otp' }, (response) => {
+        if (response && response.otp) {
+          injectReactField(otpInput, response.otp);
+          chrome.runtime.sendMessage({ action: 'otp_filled', otp: response.otp });
+          console.log(`Automatically filled OTP: ${response.otp}`);
+        } else {
+          chrome.runtime.sendMessage({ action: 'otp_failed' });
+        }
+      });
+    } else {
+      // Magic verification link verification
+      chrome.runtime.sendMessage({ action: 'otp_checking' });
+      chrome.runtime.sendMessage({ action: 'get_gmail_verification' }, (response) => {
+        if (response && response.url) {
+          console.log(`Found email verification link: ${response.url}. Navigating...`);
+          try {
+            const destUrl = new URL(response.url);
+            const pendingJobId = window.sessionStorage.getItem('__jh_jobid');
+            if (pendingJobId) {
+              destUrl.searchParams.set('__jh', pendingJobId);
+            }
+            window.location.href = destUrl.toString();
+          } catch (e) {
+            window.location.href = response.url;
+          }
+        } else {
+          chrome.runtime.sendMessage({ action: 'otp_failed' });
+        }
+      });
+    }
+  }
+}
+
+window.addEventListener('load', () => {
+  setTimeout(handlePageAutomation, 1500);
 });

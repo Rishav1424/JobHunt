@@ -1,11 +1,10 @@
 'use client';
 
-import React, { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { jobsApi, Job } from '@/lib/api';
 import JobCard from '@/components/JobCard';
 import { useSocket } from '@/lib/socket';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Checkbox } from '@/components/ui/checkbox';
 import { toast } from 'sonner';
@@ -27,20 +26,22 @@ import {
   RefreshCw,
   Check,
   X,
-  ShieldAlert,
   Sliders,
-  DollarSign,
+  IndianRupee,
   ExternalLink,
-  ChevronDown,
-  Play
+
 } from 'lucide-react';
 import Link from 'next/link';
+import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from '@/components/ui/input-group';
+import { Slider } from '@/components/ui/slider';
+import { Field, FieldLabel } from '@/components/ui/field';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
 const STATUS_TABS = [
+  { value: 'ALL', label: 'All Jobs' },
   { value: 'SCORED', label: 'Pending Review' },
   { value: 'APPROVED', label: 'Approved' },
   { value: 'APPLIED', label: 'Applied' },
-  { value: 'ALL', label: 'All Jobs' },
 ] as const;
 
 type StatusTabValue = typeof STATUS_TABS[number]['value'];
@@ -60,7 +61,7 @@ export default function JobsPage() {
   const [showFilters, setShowFilters] = useState(false);
   const [minScore, setMinScore] = useState<number>(0);
   const [selectedSource, setSelectedSource] = useState<string>('all');
-  const [minSalary, setMinSalary] = useState<string>('');
+  const [minSalary, setMinSalary] = useState<number>(0); ``
 
   // Bulk Selection states
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -86,7 +87,7 @@ export default function JobsPage() {
       // Client-side salary filtering if needed, or backend filtering
       let fetchedJobs = data.jobs as Job[];
       if (minSalary) {
-        const minVal = parseFloat(minSalary);
+        const minVal = minSalary;
         if (!isNaN(minVal)) {
           fetchedJobs = fetchedJobs.filter(j => {
             const maxSalary = j.salaryMax || 0;
@@ -225,53 +226,41 @@ export default function JobsPage() {
       </div>
 
       {/* Filters & Mode Toolbar */}
-      <div className="flex flex-col gap-4">
+      <div>
         <div className="flex flex-col lg:flex-row gap-3 items-stretch justify-between">
-
           {/* Left search & filters */}
-          <div className="flex items-center gap-2 flex-1 max-w-lg">
-            <div className="relative flex-1">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-              <Input
-                type="text"
-                placeholder="Search roles, tech, or companies..."
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                className="pl-9 bg-card border-border text-foreground text-xs rounded-lg h-9 placeholder:text-muted-foreground/50"
-              />
-            </div>
-
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setShowFilters(!showFilters)}
-              className={`border-border h-9 rounded-lg px-3 flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer ${showFilters ? 'bg-muted text-foreground border-border' : 'bg-muted/30'
-                }`}
-            >
-              <SlidersHorizontal className="w-3.5 h-3.5" />
+          <InputGroup className="max-w-96">
+            <InputGroupAddon>
+              <Search />
+            </InputGroupAddon>
+            <InputGroupInput
+              type="text"
+              placeholder="Search roles, tech, or companies..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+            <InputGroupButton onClick={() => setShowFilters(!showFilters)}>
+              <SlidersHorizontal />
               Filters
-            </Button>
-          </div>
+            </InputGroupButton>
+          </InputGroup>
 
           {/* Right Mode Toggles & Tabs */}
-          <div className="flex flex-col sm:flex-row items-center gap-3">
+          <div className="flex items-center gap-2">
             {/* View Mode Toggle */}
-            <div className="flex rounded-lg border border-border bg-muted/30 p-0.5 shrink-0 self-stretch sm:self-auto justify-center">
-              <button
-                onClick={() => setViewMode('grid')}
-                className={`p-1.5 rounded-md transition-colors cursor-pointer ${viewMode === 'grid' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'}`}
-                title="Card Grid"
-              >
-                <LayoutGrid className="h-4 w-4" />
-              </button>
-              <button
-                onClick={() => setViewMode('table')}
-                className={`p-1.5 rounded-md transition-colors cursor-pointer ${viewMode === 'table' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'}`}
-                title="Spreadsheet Table"
-              >
-                <List className="h-4 w-4" />
-              </button>
-            </div>
+            <Tabs
+              value={viewMode}
+              onValueChange={(val: "grid" | "table") => setViewMode(val)}
+            >
+              <TabsList variant="pills">
+                <TabsTrigger value="grid">
+                  <LayoutGrid className="h-4 w-4" />
+                </TabsTrigger>
+                <TabsTrigger value="table">
+                  <List className="h-4 w-4" />
+                </TabsTrigger>
+              </TabsList>
+            </Tabs>
 
             {/* Status Tabs */}
             <Tabs
@@ -282,12 +271,11 @@ export default function JobsPage() {
               }}
               className="w-full sm:w-auto"
             >
-              <TabsList className="bg-muted border border-border p-0.5 grid grid-cols-4 rounded-xl">
+              <TabsList variant="line">
                 {STATUS_TABS.map((tab) => (
                   <TabsTrigger
                     key={tab.value}
                     value={tab.value}
-                    className="rounded-lg text-xs py-1.5 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground text-muted-foreground cursor-pointer"
                   >
                     {tab.label}
                   </TabsTrigger>
@@ -300,74 +288,79 @@ export default function JobsPage() {
 
         {/* Expandable Advanced Filters Drawer */}
         <div
-          className={`grid transition-[grid-template-rows,opacity] duration-300 ease-in-out ${
-            showFilters ? 'grid-rows-[1fr] opacity-100 mt-4' : 'grid-rows-[0fr] opacity-0'
-          }`}
+          className={`grid transition-[grid-template-rows,opacity] duration-300 ease-in-out ${showFilters ? 'grid-rows-[1fr] opacity-100 mt-2' : 'grid-rows-[0fr] opacity-0'
+            }`}
         >
           <div className="overflow-hidden">
-            <div className="p-4 border border-border bg-muted/30 rounded-xl grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div className="px-4 py-2 border border-border bg-muted/30 rounded-lg grid grid-cols-1 sm:grid-cols-3 gap-x-4 gap-y-2">
 
-                {/* Min Fit Score */}
-                <div className="space-y-1.5">
-                  <label className="text-[10px] uppercase tracking-wider text-muted-foreground font-bold">Min Fit Score</label>
-                  <div className="flex items-center gap-3">
-                    <input
-                      type="range"
-                      min="0"
-                      max="100"
-                      value={minScore}
-                      onChange={(e) => setMinScore(parseInt(e.target.value, 10))}
-                      className="w-full accent-primary bg-background h-1.5 rounded-lg"
-                    />
-                    <Badge className="bg-primary/10 text-primary border-primary/20 w-10 text-center shrink-0">{minScore}%</Badge>
-                  </div>
-                </div>
+              {/* Min Fit Score */}
+              <Field>
+                <FieldLabel className="text-[10px] uppercase tracking-wider text-muted-foreground font-bold">Min Fit Score  {minScore}%</FieldLabel>
+                <Slider
+                  min={0}
+                  max={100}
+                  value={[minScore]}
+                  onValueChange={(value: [number]) => setMinScore(value[0])}
+                  className="mt-2"
+                />
+              </Field>
 
-                {/* Scraper Source */}
-                <div className="space-y-1.5">
-                  <label className="text-[10px] uppercase tracking-wider text-muted-foreground font-bold">Scraper Source</label>
-                  <select
-                    value={selectedSource}
-                    onChange={(e) => setSelectedSource(e.target.value)}
-                    className="w-full bg-background border border-border rounded-lg text-xs p-1.5 text-foreground"
-                  >
-                    <option value="all">All Sources</option>
-                    <option value="linkedin">LinkedIn</option>
-                    <option value="naukri">Naukri</option>
-                    <option value="wellfound">Wellfound</option>
-                    <option value="instahyre">Instahyre</option>
-                    <option value="adzuna">Adzuna</option>
-                    <option value="remoteok">RemoteOK</option>
-                    <option value="ycombinator">YCombinator</option>
-                  </select>
-                </div>
+              {/* Scraper Source */}
+              <Field>
+                <FieldLabel>Scraper Source</FieldLabel>
+                <Select
+                  value={selectedSource}
+                  onValueChange={(val: string) => setSelectedSource(val)}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select Source" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Sources</SelectItem>
+                    <SelectItem value="linkedin">LinkedIn</SelectItem>
+                    <SelectItem value="naukri">Naukri</SelectItem>
+                    <SelectItem value="wellfound">Wellfound</SelectItem>
+                    <SelectItem value="instahyre">Instahyre</SelectItem>
+                    <SelectItem value="adzuna">Adzuna</SelectItem>
+                    <SelectItem value="remoteok">RemoteOK</SelectItem>
+                    <SelectItem value="ycombinator">YCombinator</SelectItem>
+                  </SelectContent>
+                </Select>
+              </Field>
 
-                {/* Min Salary */}
-                <div className="space-y-1.5">
-                  <label className="text-[10px] uppercase tracking-wider text-muted-foreground font-bold">Min Salary (LPA)</label>
-                  <div className="relative">
-                    <span className="absolute inset-y-0 left-0 flex items-center pl-2 text-muted-foreground text-xs">₹</span>
-                    <Input
-                      type="number"
-                      placeholder="e.g. 15"
-                      value={minSalary}
-                      onChange={(e) => setMinSalary(e.target.value)}
-                      className="pl-6 bg-background border-border text-foreground text-xs h-8 rounded-lg"
-                    />
-                  </div>
-                </div>
+              {/* Min Salary */}
+              <Field>
+                <FieldLabel>Min Salary (LPA)</FieldLabel>
+                <InputGroup>
+                  <InputGroupAddon>
+                    <IndianRupee />
+                  </InputGroupAddon>
+                  <InputGroupInput
+                    type="number"
+                    placeholder="Expected salary in LPA"
+                    value={minSalary}
+                    onChange={(e) => setMinSalary(parseInt(e.target.value) || 0)}
+                  />
+                </InputGroup>
+              </Field>
 
-              </div>
+            </div>
           </div>
         </div>
       </div>
 
       {/* Bulk Action Floating Panel */}
       <div
-        className={`fixed bottom-6 left-1/2 -translate-x-1/2 z-50 bg-card border border-border px-6 py-3 rounded-full flex items-center gap-4 shadow-2xl backdrop-blur-xl transition-all duration-300 ease-in-out ${
-          selectedIds.length > 0 ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-20 pointer-events-none'
-        }`}
+        className={`fixed bottom-6 left-1/2 -translate-x-1/2 z-50 bg-background/50 border border-border px-4 py-2 rounded-xl flex items-center gap-4 shadow-2xl backdrop-blur-xl transition-all duration-300 ease-in-out ${selectedIds.length > 0 ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-20 pointer-events-none'
+          }`}
       >
+        <Button
+          variant="ghost"
+          onClick={() => setSelectedIds([])}
+        >
+          <X />
+        </Button>
         <span className="text-xs font-bold text-primary">{selectedIds.length} roles selected</span>
 
         <div className="h-4 w-px bg-border" />
@@ -375,21 +368,17 @@ export default function JobsPage() {
         <div className="flex gap-2">
           <Button
             variant="outline"
-            size="sm"
             onClick={handleBulkSkip}
             disabled={bulkActionRunning}
-            className="h-8 border-border text-destructive hover:bg-destructive/10 rounded-full text-xs cursor-pointer"
           >
-            <X className="h-3 w-3 mr-1" />
+            <X />
             Bulk Skip
           </Button>
           <Button
-            size="sm"
             onClick={handleBulkApprove}
             disabled={bulkActionRunning}
-            className="h-8 rounded-full text-xs cursor-pointer"
           >
-            <Check className="h-3 w-3 mr-1" />
+            <Check />
             Bulk Approve
           </Button>
         </div>
@@ -416,49 +405,43 @@ export default function JobsPage() {
         /* STANDARD CARD VIEW */
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {jobs.map((job) => (
-            <div key={job.id} className="relative group">
-              {/* Checkbox Overlay */}
-              {activeTab === 'SCORED' && (
-                <div className="absolute top-3 left-3 z-10 opacity-0 group-hover:opacity-100 transition-opacity">
-                  <Checkbox
-                    checked={selectedIds.includes(job.id)}
-                    onCheckedChange={() => toggleSelect(job.id)}
-                    className="border-border bg-card/85 data-[state=checked]:bg-primary data-[state=checked]:text-primary-foreground h-4 w-4"
-                  />
-                </div>
-              )}
-              <JobCard
-                job={job}
-                onApprove={handleApprove}
-                onSkip={handleSkip}
-                onBlacklist={handleBlacklist}
-              />
-            </div>
+            <JobCard
+              key={job.id}
+              job={job}
+              onClick={() => toggleSelect(job.id)}
+              onApprove={handleApprove}
+              onSkip={handleSkip}
+              onBlacklist={handleBlacklist}
+              className={activeTab === 'SCORED' && selectedIds.includes(job.id) ? "ring-2 ring-primary" : ""}
+            />
           ))}
         </div>
       ) : (
         /* DENSE SPREADSHEET TABLE VIEW */
-        <div className="rounded-xl border border-border bg-card/20 backdrop-blur-md overflow-hidden">
+        <div className="rounded-lg border border-border bg-card/20 backdrop-blur-md overflow-hidden">
           <Table>
-            <TableHeader className="bg-muted text-muted-foreground">
+            <TableHeader className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
               <TableRow className="border-b border-border">
                 {activeTab === 'SCORED' && (
                   <TableHead className="w-10">
                     <Checkbox
                       checked={selectedIds.length === jobs.length}
                       onCheckedChange={toggleSelectAll}
-                      className="border-border bg-background data-[state=checked]:bg-primary data-[state=checked]:text-primary-foreground h-4 w-4"
                     />
                   </TableHead>
                 )}
-                <TableHead className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Job Title</TableHead>
-                <TableHead className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Company</TableHead>
-                <TableHead className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Score</TableHead>
-                <TableHead className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Location</TableHead>
-                <TableHead className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Salary</TableHead>
-                <TableHead className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Source</TableHead>
-                <TableHead className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Age</TableHead>
-                <TableHead className="text-xs font-bold uppercase tracking-wider text-muted-foreground text-right">Actions</TableHead>
+                <TableHead className="py-2">
+                  <div className="flex items-baseline">
+                    <span className="font-medium text-base">Company </span>
+                    <span className="text-[10px] font-light ml-2 text-muted-foreground"> | Location </span>
+                  </div>
+                  <span className="text-xs text-muted-foreground mt-2">Title</span>
+                </TableHead>
+                <TableHead>Score</TableHead>
+                <TableHead>Salary</TableHead>
+                <TableHead>Source</TableHead>
+                <TableHead>Age</TableHead>
+                <TableHead className="text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -473,12 +456,16 @@ export default function JobsPage() {
                       />
                     </TableCell>
                   )}
-                  <TableCell className="font-bold text-foreground">
-                    <Link href={`/jobs/${job.id}`} className="hover:underline">
-                      {job.title}
+                  <TableCell className="max-w-96 truncate">
+                    <Link href={`/jobs/${job.id}`}>
+                      <div className="flex items-baseline">
+                        <span className="font-medium text-base">{job.company} </span>
+                        <span className="text-[10px] ml-2 font-light text-muted-foreground"> | {job.isRemote ? 'Remote' : job.location} </span>
+                      </div>
+                      <span className="text-xs text-muted-foreground mt-2">{job.title}</span>
                     </Link>
+
                   </TableCell>
-                  <TableCell className="text-muted-foreground">{job.company}</TableCell>
                   <TableCell>
                     {job.fitScore !== undefined && (
                       <Badge className={`text-[10px] font-bold py-0.5 rounded-full ${job.fitScore >= 80
@@ -491,7 +478,6 @@ export default function JobsPage() {
                       </Badge>
                     )}
                   </TableCell>
-                  <TableCell className="text-muted-foreground">{job.isRemote ? 'Remote' : job.location}</TableCell>
                   <TableCell className="text-muted-foreground truncate max-w-[120px]">{job.salaryRaw || 'Unknown'}</TableCell>
                   <TableCell>
                     <Badge variant="outline" className="text-[10px] border-border text-muted-foreground uppercase">{job.source}</Badge>

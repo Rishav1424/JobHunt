@@ -3,9 +3,10 @@
 import { Job } from '@/lib/api';
 import { Building2, MapPin, DollarSign, ExternalLink, Clock } from 'lucide-react';
 import Link from 'next/link';
-import { Card, CardContent } from '@/components/ui/card';
+import { Card, CardAction, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { cn } from '@/lib/utils';
 
 interface JobCardProps {
   job: Job;
@@ -14,7 +15,7 @@ interface JobCardProps {
   onBlacklist?: (id: string) => void;
 }
 
-export default function JobCard({ job, onApprove, onSkip, onBlacklist }: JobCardProps) {
+export default function JobCard({ job, onApprove, onSkip, onBlacklist, ...props }: React.ComponentProps<'div'> & JobCardProps) {
   const score = job.fitScore;
   const scoreVariant = score !== undefined
     ? score >= 75 ? 'default' : score >= 55 ? 'secondary' : 'destructive'
@@ -37,30 +38,30 @@ export default function JobCard({ job, onApprove, onSkip, onBlacklist }: JobCard
   };
 
   return (
-    <Card className="hover:bg-accent/50 transition-colors">
-      <CardContent className="p-4 space-y-3">
+    <Card {...props}>
+      <CardHeader>
         {/* Header */}
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0 flex-1">
-            <Link href={`/jobs/${job.id}`}>
-              <h3 className="font-semibold text-sm leading-tight hover:underline cursor-pointer">
-                {job.title}
-              </h3>
-            </Link>
-            <div className="flex items-center gap-1.5 mt-1">
-              <Building2 className="w-3 h-3 text-muted-foreground shrink-0" />
-              <span className="text-xs text-muted-foreground font-medium">{job.company}</span>
-            </div>
-          </div>
+        <CardTitle >
+          <Link href={`/jobs/${job.id}`}>
+            {job.title}
+          </Link>
+        </CardTitle>
+        <CardDescription className="flex items-center gap-1.5 mt-1">
+          <Building2 className="w-3 h-3 text-muted-foreground shrink-0" />
+          <span className="text-xs text-muted-foreground font-medium">{job.company}</span>
+        </CardDescription>
 
-          {/* Score Badge */}
-          {score !== undefined && (
-            <Badge variant={scoreVariant} className="shrink-0">
+        {/* Score Badge */}
+        {score !== undefined && (
+          <CardAction>
+            <Badge>
               {score}%
             </Badge>
-          )}
-        </div>
+          </CardAction>
+        )}
 
+      </CardHeader>
+      <CardContent >
         {/* Meta */}
         <div className="flex flex-wrap gap-2">
           <span className="flex items-center gap-1 text-xs text-muted-foreground">
@@ -92,46 +93,53 @@ export default function JobCard({ job, onApprove, onSkip, onBlacklist }: JobCard
             {job.fitAnalysis.recommendation}
           </p>
         )}
+      </CardContent>
 
-        {/* Footer */}
-        <div className="flex items-center justify-between gap-2">
-          <span className="flex items-center gap-1 text-xs text-muted-foreground">
-            <Clock className="w-3 h-3" />
-            {timeAgo(job.scrapedAt)}
-          </span>
+      {/* Footer */}
+      <CardFooter>
+        <span className="flex flex-1 gap-2 items-center text-xs text-muted-foreground">
+          <Clock className="w-3 h-3" />
+          {timeAgo(job.scrapedAt)}
+        </span>
 
-          <div className="flex items-center gap-2">
+        {(() => {
+          let applyUrl = job.url;
+          try {
+            const urlObj = new URL(job.applyUrl || job.url);
+            urlObj.searchParams.set('__jh', job.id);
+            applyUrl = urlObj.toString();
+          } catch {}
+          return (
             <Button
               variant="link"
               size="icon"
-              className="h-7 w-7"
               asChild
             >
-              <Link href={job.url} target="_blank" rel="noopener noreferrer">
-                <ExternalLink className="w-3.5 h-3.5" />
+              <Link href={applyUrl} target="_blank" rel="noopener noreferrer">
+                <ExternalLink />
               </Link>
             </Button>
+          );
+        })()}
 
-            {job.status === 'SCORED' && (
-              <>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => onSkip?.(job.id)}
-                >
-                  Skip
-                </Button>
-                <Button
-                  size="sm"
-                  onClick={() => onApprove?.(job.id)}
-                >
-                  Approve →
-                </Button>
-              </>
-            )}
-          </div>
-        </div>
-      </CardContent>
+        {job.status === 'SCORED' && (
+          <>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => onSkip?.(job.id)}
+            >
+              Skip
+            </Button>
+            <Button
+              size="sm"
+              onClick={() => onApprove?.(job.id)}
+            >
+              Approve →
+            </Button>
+          </>
+        )}
+      </CardFooter>
     </Card>
   );
 }

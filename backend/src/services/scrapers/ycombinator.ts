@@ -3,6 +3,7 @@ import { JobSource, JobListing, ScraperQuery } from './base';
 import { logger } from '../../core/logger';
 import { config } from '../../core/config';
 import { browserPool } from './browserPool';
+import { fetchJobDetails } from './detailFetcher';
 
 const USER_AGENTS = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
@@ -134,7 +135,24 @@ export class YCombinatorScraper extends JobSource {
             const jobUrl = job.url || (jobId ? `https://www.workatastartup.com/jobs/${jobId}` : '');
             if (!title || !company || !jobUrl) continue;
 
-            const description = job.description || job.job_description || job.snippet || `${title} at ${company}`;
+            const description_raw = job.description || job.job_description || job.snippet || '';
+
+            // Task 15: Fetch detail page for short/Algolia-snippet descriptions
+            let description = description_raw;
+            if (!description || description.length < 400) {
+              try {
+                const details = await fetchJobDetails(jobUrl);
+                if (details?.description && details.description.length > description.length) {
+                  description = details.description;
+                  logger.debug(`YCombinator: enriched description for "${title}" via detail fetch`);
+                }
+              } catch {
+                /* use what we have */
+              }
+            }
+            if (!description) {
+              description = `${title} at ${company}`;
+            }
             const locationStr = job.location || job.job_location || 'Remote';
             
             // Salary handling

@@ -250,11 +250,14 @@ model KnowledgeChunk {
 
 model AnswerBank {
   id         String   @id @default(cuid())
-  question   String   @unique
+  question   String
+  company    String   @default("")
   answer     String   @db.Text
   embedding  Float[]  // 768-dimensional Gemini embedding of the question
   embedding_vec Unsupported("vector(768)")?
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
+
+  @@unique([question, company])
 }
 

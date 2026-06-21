@@ -28,24 +28,87 @@ export function setupSocket(server: Server): void {
     socket.on('autofill:start', async (data: { jobId: string; fields: any[] }) => {
       logger.info(`Received autofill:start from socket ${socket.id} for jobId: ${data.jobId}`);
       
-      const executor = new AutofillGraphExecutor(
+      const onStateChange = (updatedState: any) => {
+        socket.emit('autofill:state-change', updatedState);
+      };
+
+      // Check if there is an active in-memory run first
+      let executor = AutofillGraphExecutor.getRun(data.jobId);
+      if (executor) {
+        logger.info(`Re-associating existing in-memory run with new socket ${socket.id} for jobId: ${data.jobId}`);
+        executor.updateSocket(socket.id, onStateChange);
+        socket.emit('autofill:state-change', executor.state);
+        return;
+      }
+
+      // Check if there is a persisted run in Redis
+      const persistedState = await AutofillGraphExecutor.getRunState(data.jobId);
+      if (persistedState) {
+        logger.info(`Restoring persisted autofill run from Redis for jobId: ${data.jobId}`);
+        executor = new AutofillGraphExecutor(
+          data.jobId,
+          persistedState.fields,
+          socket.id,
+          onStateChange
+        );
+        executor.state = persistedState;
+        AutofillGraphExecutor.registerRun(data.jobId, executor);
+        AutofillGraphExecutor.registerRun(socket.id, executor);
+
+        // Emit current state back to client
+        socket.emit('autofill:state-change', executor.state);
+
+        // If status was parsing/mapping, resume
+        if (executor.state.status === 'parsing' || executor.state.status === 'mapping') {
+          await executor.execute();
+        }
+        return;
+      }
+
+      // Fresh run
+      executor = new AutofillGraphExecutor(
         data.jobId,
         data.fields,
         socket.id,
-        (updatedState) => {
-          socket.emit('autofill:state-change', updatedState);
-        }
+        onStateChange
       );
       
       AutofillGraphExecutor.registerRun(socket.id, executor);
+      AutofillGraphExecutor.registerRun(data.jobId, executor);
       await executor.execute();
     });
 
-    socket.on('autofill:hitl-resolve', async (data: { answers: Record<string, string> }) => {
-      logger.info(`Received autofill:hitl-resolve from socket ${socket.id}`);
+    socket.on('autofill:hitl-resolve', async (data: { jobId?: string; answers: Record<string, string> }) => {
+      logger.info(`Received autofill:hitl-resolve from socket ${socket.id} (jobId: ${data.jobId})`);
       
-      const executor = AutofillGraphExecutor.getRun(socket.id);
+      let executor = AutofillGraphExecutor.getRun(socket.id);
+      if (!executor && data.jobId) {
+        executor = AutofillGraphExecutor.getRun(data.jobId);
+      }
+
+      const onStateChange = (updatedState: any) => {
+        socket.emit('autofill:state-change', updatedState);
+      };
+
+      // If still not found in memory, try to restore from Redis
+      if (!executor && data.jobId) {
+        const persistedState = await AutofillGraphExecutor.getRunState(data.jobId);
+        if (persistedState) {
+          logger.info(`Restoring persisted autofill run from Redis on HITL resolve for jobId: ${data.jobId}`);
+          executor = new AutofillGraphExecutor(
+            data.jobId,
+            persistedState.fields,
+            socket.id,
+            onStateChange
+          );
+          executor.state = persistedState;
+          AutofillGraphExecutor.registerRun(data.jobId, executor);
+          AutofillGraphExecutor.registerRun(socket.id, executor);
+        }
+      }
+      
       if (executor) {
+        executor.updateSocket(socket.id, onStateChange);
         await executor.execute(data.answers);
       } else {
         logger.warn(`No active autofill run found to resolve for socket: ${socket.id}`);
@@ -55,7 +118,7 @@ export function setupSocket(server: Server): void {
 
     socket.on('disconnect', () => {
       logger.debug(`Socket disconnected: ${socket.id}`);
-      AutofillGraphExecutor.removeRun(socket.id);
+      AutofillGraphExecutor.removeSocketMapping(socket.id);
     });
   });
 }
