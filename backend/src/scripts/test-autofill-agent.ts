@@ -1,9 +1,9 @@
 import { prisma } from '../core/prisma';
-import { AutofillGraphExecutor, AutofillField } from '../services/ai-engine/autofillGraph';
+import { AutofillAgentExecutor, AutofillField } from '../services/ai-engine/autofillAgent';
 import { logger } from '../core/logger';
 
 async function runTest() {
-  logger.info('🚀 Starting Autofill Graph Integration Test...');
+  logger.info('🚀 Starting Autofill Agent Integration Test...');
 
   // 1. Fetch a job to simulate applying for (take the first scored/approved job in the database)
   const job = await prisma.job.findFirst({
@@ -56,14 +56,14 @@ async function runTest() {
 
   // 3. Initialize the executor
   const socketId = `mock-socket-${Date.now()}`;
-  const executor = new AutofillGraphExecutor(
+  const executor = new AutofillAgentExecutor(
     job.id,
     mockFields,
     socketId,
     async (state) => {
-      logger.info(`🔄 Graph State Update: [Status: ${state.status}]`);
-      if (state.status === 'waiting_for_user') {
-        logger.warn(`⚠️ Graph paused for Human-in-the-Loop! Unresolved fields:`);
+      logger.info(`🔄 Agent State Update: [Status: ${state.status}]`);
+      if (state.status === 'HITL_REQUIRED') {
+        logger.warn(`⚠️ Agent paused for Human-in-the-Loop! Unresolved fields:`);
         state.unresolvedFields.forEach((f) => {
           logger.warn(`  - [${f.id}] "${f.label}"`);
         });
@@ -83,21 +83,61 @@ async function runTest() {
           logger.info('✍️ Submitting human resolutions...');
           await executor.execute(resolutions);
         }, 2000);
-      } else if (state.status === 'completed') {
+      } else if (state.status === 'COMPLETED') {
         logger.info('✅ Integration Test Completed Successfully!');
         logger.info('--- FINAL ANSWERS MAP ---');
         console.log(JSON.stringify(state.answers, null, 2));
         logger.info(`Tailored Resume PDF URL: ${state.tailoredResumeUrl}`);
         process.exit(0);
-      } else if (state.status === 'failed') {
-        logger.error(`❌ Graph execution failed: ${state.errorMessage}`);
+      } else if (state.status === 'FAILED') {
+        logger.error(`❌ Agent execution failed: ${state.errorMessage}`);
         process.exit(1);
       }
+    },
+    (event, payload) => {
+      logger.info(`[Mock Popup] Received event from backend: "${event}"`);
+      // Simulate extension script responding back after a delay
+      setTimeout(() => {
+        if (event === 'page:classify') {
+          executor.handleResponse('page:classify:response', {
+            pageType: 'application_form',
+            url: 'https://jobs.lever.co/mock/sde',
+          });
+        } else if (event === 'fields:extract') {
+          executor.handleResponse('fields:extract:response', {
+            success: true,
+            fields: mockFields,
+            isMultiStep: false,
+          });
+        } else if (event === 'field:inject') {
+          executor.handleResponse('field:inject:response', {
+            success: true,
+            fieldId: payload.fieldId,
+            strategy: payload.strategies[0],
+            validated: true,
+            actualValue: payload.value,
+          });
+        } else if (event === 'fields:validate') {
+          const results: Record<string, any> = {};
+          payload.fieldIds.forEach((id: string) => {
+            const field = mockFields.find((f) => f.id === id);
+            results[id] = { success: true, actualValue: field?.value || 'Mocked' };
+          });
+          executor.handleResponse('fields:validate:response', { results });
+        } else if (event === 'page:observe') {
+          executor.handleResponse('page:observe:response', {
+            confirmationDetected: false,
+            errorDetected: false,
+          });
+        } else if (event === 'field:upload') {
+          executor.handleResponse('field:upload:response', { success: true });
+        }
+      }, 500);
     }
   );
 
   // 4. Register and run the executor
-  AutofillGraphExecutor.registerRun(socketId, executor);
+  AutofillAgentExecutor.registerRun(socketId, executor);
   await executor.execute();
 }
 

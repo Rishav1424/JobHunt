@@ -5,6 +5,7 @@
   "description": "Stateful autofill assistant and PDF resume tailor for JobHunt.",
   "permissions": [
     "activeTab",
+    "tabs",
     "scripting",
     "storage",
     "downloads",
@@ -12,7 +13,9 @@
     "identity"
   ],
   "host_permissions": [
-    "http://localhost:4000/*"
+    "http://localhost:4000/*",
+    "http://*/*",
+    "https://*/*"
   ],
   "oauth2": {
     "client_id": "YOUR_GOOGLE_OAUTH_CLIENT_ID.apps.googleusercontent.com",
@@ -28,19 +31,8 @@
     {
       "js": ["src/content.ts"],
       "matches": [
-        "https://jobs.lever.co/*",
-        "https://boards.greenhouse.io/*",
-        "https://*.myworkdayjobs.com/*",
-        "https://app.ashbyhq.com/*",
-        "https://wellfound.com/*",
-        "https://angel.co/*",
-        "https://www.instahyre.com/*",
-        "https://careers.smartrecruiters.com/*",
-        "https://*.icims.com/*",
-        "https://*.taleo.net/*",
-        "https://www.naukri.com/*",
-        "https://*.hire.trakstar.com/*",
-        "https://jobs.ashbyhq.com/*"
+        "http://*/*",
+        "https://*/*"
       ],
       "run_at": "document_idle"
     }

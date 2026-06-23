@@ -68,6 +68,8 @@ export const jobsApi = {
   getQueueStatus: () => api.get('/jobs/queues/status').then((r) => r.data),
 
   drainQueue: (name: string) => api.post(`/jobs/queues/${name}/drain`).then((r) => r.data),
+
+  getSystemLogs: () => api.get('/jobs/system/logs').then((r) => r.data),
 };
 
 // ─── Applications ─────────────────────────────────────────────────────────────
@@ -108,6 +110,21 @@ export const settingsApi = {
 
   simulateScore: (data: { title: string; company?: string; description: string }) =>
     api.post('/settings/simulate-score', data).then((r) => r.data),
+
+  getProfileHealth: () => api.get('/settings/profile-health').then((r) => r.data as {
+    profileSeeded: boolean;
+    profileName: string;
+    knowledgeChunksCount: number;
+    answerBankCount: number;
+    categoryCounts: Record<string, number>;
+    checklist: { category: string; exists: boolean; count: number }[];
+  }),
+
+  seedProfile: () => api.post('/settings/profile/seed').then((r) => r.data as { success: boolean; message: string }),
+
+  getProfileData: () => api.get('/settings/profile-data').then((r) => r.data as { content: string }),
+
+  updateProfileData: (content: string) => api.post('/settings/profile-data', { content }).then((r) => r.data as { success: boolean; message: string }),
 };
 
 // ─── Types ────────────────────────────────────────────────────────────────────

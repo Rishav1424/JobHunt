@@ -14,6 +14,7 @@
     "db:push": "prisma db push",
     "db:studio": "prisma studio",
     "db:seed": "tsx src/scripts/seed.ts",
+    "seed:profile": "tsx src/scripts/seed-profile-doc.ts",
     "requeue:failed": "tsx src/scripts/requeue-failed-scoring.ts",
     "requeue:all": "tsx src/scripts/requeue-all-scored.ts"
   },

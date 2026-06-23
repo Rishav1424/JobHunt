@@ -31,7 +31,31 @@ interface ScrapedField {
   unresolved?: boolean;
 }
 
+type AutofillStateName =
+  | 'IDLE'
+  | 'PAGE_DETECT'
+  | 'AUTH_DETECT'
+  | 'AUTH_FILL'
+  | 'AUTH_SUBMIT'
+  | 'OTP_WAIT'
+  | 'MAGIC_LINK_WAIT'
+  | 'FIELDS_EXTRACT'
+  | 'FIELDS_ANALYZE'
+  | 'CONTEXT_BUILD'
+  | 'ANSWERS_GENERATE'
+  | 'RESUME_COMPILE'
+  | 'INJECT_PLAN'
+  | 'INJECT_EXECUTE'
+  | 'INJECT_VALIDATE'
+  | 'INJECT_RETRY'
+  | 'HITL_REQUIRED'
+  | 'PAGE_OBSERVE'
+  | 'NEXT_STEP'
+  | 'COMPLETED'
+  | 'FAILED';
+
 interface AutofillState {
+  applicationId?: string;
   jobId: string;
   jobTitle: string;
   companyName: string;
@@ -40,7 +64,7 @@ interface AutofillState {
   unresolvedFields: ScrapedField[];
   resumeTailored: boolean;
   tailoredResumeUrl?: string;
-  status: 'parsing' | 'mapping' | 'waiting_for_user' | 'completed' | 'failed';
+  status: AutofillStateName;
   errorMessage?: string;
   progressMessage?: string;
 }
@@ -55,6 +79,31 @@ interface JobDetails {
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:4000';
 
+function getAgentStateDescription(status: string): { title: string; subtitle: string } {
+  const mapping: Record<string, { title: string; subtitle: string }> = {
+    PAGE_DETECT: { title: 'Sensing Page Context', subtitle: 'Analyzing current tab DOM structure...' },
+    AUTH_DETECT: { title: 'Checking Credentials', subtitle: 'Scanning for login form elements...' },
+    AUTH_FILL: { title: 'Authenticating', subtitle: 'Injecting login email and password...' },
+    AUTH_SUBMIT: { title: 'Logging In', subtitle: 'Submitting authentication forms...' },
+    OTP_WAIT: { title: 'Retrieving OTP Code', subtitle: 'Checking Gmail inbox for verification codes...' },
+    MAGIC_LINK_WAIT: { title: 'Waiting for Magic Link', subtitle: 'Checking Gmail for verification link...' },
+    FIELDS_EXTRACT: { title: 'Scanning Input Fields', subtitle: 'Extracting DOM form input fields...' },
+    FIELDS_ANALYZE: { title: 'AI Field Analysis', subtitle: 'Classifying field intents & strategies...' },
+    CONTEXT_BUILD: { title: 'Context Construction', subtitle: 'Loading candidate profile facts & RAG...' },
+    ANSWERS_GENERATE: { title: 'Synthesizing Answers', subtitle: 'Generating tailored custom responses...' },
+    RESUME_COMPILE: { title: 'Tailoring Resume', subtitle: 'Compiling offline resume PDF...' },
+    INJECT_PLAN: { title: 'Planning Injection Workflow', subtitle: 'Formulating element injection sequence...' },
+    INJECT_EXECUTE: { title: 'Injecting Answers', subtitle: 'Injecting values into inputs...' },
+    INJECT_VALIDATE: { title: 'Verifying Injections', subtitle: 'Reading back elements value attributes...' },
+    INJECT_RETRY: { title: 'Retrying Inputs', subtitle: 'Applying character-by-character keyboard fallbacks...' },
+    PAGE_OBSERVE: { title: 'Post-Submission Check', subtitle: 'Analyzing errors or confirmation signs...' },
+    NEXT_STEP: { title: 'Advancing Page Step', subtitle: 'Clicking next button to advance...' },
+    parsing: { title: 'Parsing DOM Schema', subtitle: 'Scanning forms...' },
+    mapping: { title: 'Mapping Profile Context', subtitle: 'Synthesizing answers...' }
+  };
+  return mapping[status] || { title: 'Executing Agent Loop', subtitle: 'Transitioning state machine...' };
+}
+
 export default function App() {
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
   const [password, setPassword] = useState<string>('');
@@ -66,12 +115,16 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
 
   // Autofill agent states
-  const [agentStatus, setAgentStatus] = useState<AutofillState['status'] | 'idle' | 'preview' | 'validation_failed' | 'autofill_completed' | 'login_needed'>('idle');
+  const [agentStatus, setAgentStatus] = useState<any>('idle');
   const [agentState, setAgentState] = useState<AutofillState | null>(null);
   const [hitlAnswers, setHitlAnswers] = useState<Record<string, string>>({});
   const [editedAnswers, setEditedAnswers] = useState<Record<string, string>>({});
   const [failedFieldsList, setFailedFieldsList] = useState<string[]>([]);
-  const [paginationInfo, setPaginationInfo] = useState<{ isMultiPage: boolean; currentPage: number } | null>(null);
+  const [paginationInfo] = useState<{ isMultiPage: boolean; currentPage: number } | null>(null);
+
+  // Ratings feedback states
+  const [ratings, setRatings] = useState<Record<string, 'GOOD' | 'NEEDS_IMPROVEMENT' | 'WRONG'>>({});
+  const [submittingRatings, setSubmittingRatings] = useState<boolean>(false);
 
   // Login credential states
   const [loginDomain, setLoginDomain] = useState<string | null>(null);
@@ -80,6 +133,7 @@ export default function App() {
   const [saveCreds, setSaveCreds] = useState<boolean>(true);
 
   const socketRef = useRef<Socket | null>(null);
+  const pendingAutoStart = useRef<boolean>(false);
 
   // Helper for authenticated API calls
   async function fetchWithAuth(endpoint: string, options: RequestInit = {}): Promise<Response> {
@@ -122,52 +176,151 @@ export default function App() {
     });
   }
 
-  // 1. Check authentication and detect active page
-  useEffect(() => {
-    async function init() {
-      try {
-        setLoading(true);
-        setError(null);
+  function isSupportedATSUrl(url: string): boolean {
+    try {
+      const parsed = new URL(url);
+      const host = parsed.hostname.toLowerCase();
 
-        const checkAuthToken = () => {
-          return new Promise<string | null>((resolve) => {
-            if (typeof chrome !== 'undefined' && chrome.storage) {
-              chrome.storage.local.get(['token'], (result) => resolve(result.token || null));
-            } else {
-              resolve(localStorage.getItem('token'));
-            }
-          });
-        };
+      if (host.includes('lever.co')) return true;
+      if (host.includes('greenhouse.io')) return true;
+      if (host.includes('myworkdayjobs.com')) return true;
+      if (host.includes('ashbyhq.com')) return true;
+      if (host.includes('wellfound.com') || host.includes('angel.co')) return true;
+      if (host.includes('instahyre.com')) return true;
+      if (host.includes('smartrecruiters.com')) return true;
+      if (host.includes('icims.com')) return true;
+      if (host.includes('taleo.net')) return true;
+      if (host.includes('naukri.com')) return true;
+      if (host.includes('trakstar.com')) return true;
 
-        const token = await checkAuthToken();
-        if (!token) {
-          setIsAuthenticated(false);
+      if (host === 'localhost' || host === '127.0.0.1') return true;
+
+      return false;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  async function fetchJobById(jobId: string) {
+    try {
+      const resp = await fetchWithAuth(`/api/jobs/${jobId}`);
+      if (resp.status === 404) {
+        setError('Job not found in database. Please verify it is scraped and approved.');
+        setLoading(false);
+        return;
+      }
+      if (!resp.ok) throw new Error('Failed to fetch job details');
+      const data = await resp.json();
+      setJob({
+        id: data.id,
+        title: data.title,
+        company: data.company,
+        location: data.location || 'Remote',
+        fitScore: data.fitScore || 0,
+      });
+      setLoading(false);
+    } catch (err) {
+      setError('Could not connect to backend server. Make sure the Docker container is running.');
+      setLoading(false);
+    }
+  }
+
+  async function detectActiveTabJob() {
+    try {
+      setLoading(true);
+      setError(null);
+
+      if (typeof chrome !== 'undefined' && chrome.tabs) {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (!tab) {
+          setError('Could not access active browser tab.');
           setLoading(false);
           return;
         }
 
-        setIsAuthenticated(true);
+        // 1. Check for pending job ID in chrome.storage.session first
+        const sessionKey = `pending_job_${tab.id}`;
+        chrome.storage.session.get([sessionKey], async (result) => {
+          let pendingJobId = result[sessionKey];
 
-        if (typeof chrome !== 'undefined' && chrome.tabs) {
-          const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-          if (tab && tab.url) {
+          // 2. Fallback: ask content script for pending job ID
+          if (!pendingJobId && tab.id) {
+            try {
+              pendingJobId = await new Promise((resolve) => {
+                chrome.tabs.sendMessage(tab.id!, { action: 'check_jh_pending' }, (response) => {
+                  if (chrome.runtime.lastError || !response?.jobId) {
+                    resolve(null);
+                  } else {
+                    resolve(response.jobId);
+                  }
+                });
+              });
+            } catch (e) {
+              // Ignore message error
+            }
+          }
+
+          // 3. If we found a pending jobId, load it directly by ID
+          if (pendingJobId) {
+            pendingAutoStart.current = true; // auto-start since user clicked Apply
+            await fetchJobById(pendingJobId);
+            return;
+          }
+
+          // 4. Otherwise, check if URL is a supported ATS
+          if (tab.url && isSupportedATSUrl(tab.url)) {
             await detectJob(tab.url);
           } else {
-            setError('Could not access active browser tab.');
+            // Not a supported ATS and no pending job - show friendly idle state
+            setJob(null);
             setLoading(false);
           }
-        } else {
-          // Dev mock fallback
-          const mockUrl = 'https://jobs.lever.co/samsung/sde-intern';
-          await detectJob(mockUrl);
-        }
-      } catch (err) {
-        setError('Error initializing extension sidebar.');
-        setLoading(false);
+        });
+      } else {
+        // Dev mock fallback
+        const mockUrl = 'https://jobs.lever.co/samsung/sde-intern';
+        await detectJob(mockUrl);
       }
+    } catch (err) {
+      setError('Error initializing extension sidebar.');
+      setLoading(false);
+    }
+  }
+
+  // 1. Check authentication and detect active page
+  useEffect(() => {
+    async function init() {
+      const checkAuthToken = () => {
+        return new Promise<string | null>((resolve) => {
+          if (typeof chrome !== 'undefined' && chrome.storage) {
+            chrome.storage.local.get(['token'], (result) => resolve(result.token || null));
+          } else {
+            resolve(localStorage.getItem('token'));
+          }
+        });
+      };
+
+      const token = await checkAuthToken();
+      if (!token) {
+        setIsAuthenticated(false);
+        setLoading(false);
+        return;
+      }
+
+      setIsAuthenticated(true);
+      await detectActiveTabJob();
     }
     init();
   }, [isAuthenticated]);
+
+  // Auto-start autofill when the user arrived via an Apply link (__jh param)
+  useEffect(() => {
+    if (job && pendingAutoStart.current && agentStatus === 'idle') {
+      pendingAutoStart.current = false;
+      // Small delay to let the panel render before starting
+      setTimeout(() => startAutofill(), 400);
+    }
+  }, [job]);
 
   // Hook to handle incoming runtime messages (login request, OTP progress)
   useEffect(() => {
@@ -249,6 +402,43 @@ export default function App() {
   }
 
   // 3. Connect Socket.IO on agent start
+  function approvePreview() {
+    if (!socketRef.current || !agentState) return;
+    setAgentStatus('mapping');
+    socketRef.current.emit('autofill:hitl-resolve', { jobId: job?.id, answers: editedAnswers });
+  }
+
+  async function submitRatings() {
+    if (!agentState?.applicationId) {
+      resetState();
+      return;
+    }
+
+    try {
+      setSubmittingRatings(true);
+      const ratingsPayload = Object.entries(ratings).map(([question, rating]) => ({
+        question,
+        rating,
+      }));
+
+      const res = await fetchWithAuth(`/api/applications/${agentState.applicationId}/answer-ratings`, {
+        method: 'POST',
+        body: JSON.stringify({ ratings: ratingsPayload }),
+      });
+      if (res.ok) {
+        alert('Ratings saved successfully!');
+        resetState();
+      } else {
+        alert('Failed to submit ratings.');
+      }
+    } catch (err) {
+      console.error(err);
+      resetState();
+    } finally {
+      setSubmittingRatings(false);
+    }
+  }
+
   function startAutofill() {
     if (!job) return;
 
@@ -265,58 +455,187 @@ export default function App() {
       socket.on('connect', () => {
         console.log('Connected to socket server:', socket.id);
 
-        if (typeof chrome !== 'undefined' && chrome.tabs) {
+        const tabIdPromise = new Promise<number>((resolveTab) => {
+          if (typeof chrome !== 'undefined' && chrome.tabs) {
+            chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
+              if (tab && tab.id) resolveTab(tab.id);
+              else resolveTab(-1);
+            });
+          } else {
+            resolveTab(-1);
+          }
+        });
+
+        // ── Socket relays to content script ──
+        socket.on('page:classify', async () => {
+          const tabId = await tabIdPromise;
+          if (tabId === -1) {
+            socket.emit('page:classify:response', { pageType: 'application_form', url: '', jobId: job.id });
+            return;
+          }
+          chrome.tabs.sendMessage(tabId, { action: 'page:classify' }, (response) => {
+            socket.emit('page:classify:response', { ...(response || { pageType: 'unknown', url: '' }), jobId: job.id });
+          });
+        });
+
+        socket.on('fields:extract', async () => {
+          const tabId = await tabIdPromise;
+          if (tabId === -1) {
+            socket.emit('fields:extract:response', { success: true, fields: [], jobId: job.id });
+            return;
+          }
+          chrome.tabs.sendMessage(tabId, { action: 'fields:extract' }, (response) => {
+            socket.emit('fields:extract:response', { ...(response || { success: false }), jobId: job.id });
+          });
+        });
+
+        socket.on('field:inject', async (payload) => {
+          const tabId = await tabIdPromise;
+          if (tabId === -1) {
+            socket.emit('field:inject:response', { success: true, jobId: job.id });
+            return;
+          }
+          chrome.tabs.sendMessage(tabId, { action: 'field:inject', fieldId: payload.fieldId, value: payload.value, strategies: payload.strategies }, (response) => {
+            socket.emit('field:inject:response', { ...(response || { success: false }), jobId: job.id });
+          });
+        });
+
+        socket.on('fields:validate', async (payload) => {
+          const tabId = await tabIdPromise;
+          if (tabId === -1) {
+            socket.emit('fields:validate:response', { success: true, results: {}, jobId: job.id });
+            return;
+          }
+          chrome.tabs.sendMessage(tabId, { action: 'fields:validate', fieldIds: payload.fieldIds }, (response) => {
+            socket.emit('fields:validate:response', { ...(response || { success: false }), jobId: job.id });
+          });
+        });
+
+        socket.on('page:observe', async () => {
+          const tabId = await tabIdPromise;
+          if (tabId === -1) {
+            socket.emit('page:observe:response', { success: true, confirmationDetected: false, errorDetected: false, jobId: job.id });
+            return;
+          }
+          chrome.tabs.sendMessage(tabId, { action: 'page:observe' }, (response) => {
+            socket.emit('page:observe:response', { ...(response || { success: false }), jobId: job.id });
+          });
+        });
+
+        socket.on('field:upload', async (payload) => {
+          const tabId = await tabIdPromise;
+          if (tabId === -1) {
+            socket.emit('field:upload:response', { success: true, jobId: job.id });
+            return;
+          }
+          chrome.tabs.sendMessage(tabId, { action: 'field:upload', fieldId: payload.fieldId, fileUrl: payload.fileUrl, filename: payload.filename }, (response) => {
+            socket.emit('field:upload:response', { ...(response || { success: false }), jobId: job.id });
+          });
+        });
+
+        socket.on('dom:click', async (payload) => {
+          const tabId = await tabIdPromise;
+          if (tabId === -1) {
+            socket.emit('dom:click:response', { success: true, jobId: job.id });
+            return;
+          }
+          chrome.tabs.sendMessage(tabId, { action: 'dom:click', selector: payload.selector }, (response) => {
+            socket.emit('dom:click:response', { ...(response || { success: false }), jobId: job.id });
+          });
+        });
+
+        socket.on('dom:navigate', async (payload) => {
+          const tabId = await tabIdPromise;
+          if (tabId === -1 || !payload?.url) {
+            socket.emit('dom:navigate:response', { success: false, error: 'No active tab or URL', jobId: job.id });
+            return;
+          }
+          try {
+            await chrome.tabs.update(tabId, { url: payload.url });
+            socket.emit('dom:navigate:response', { success: true, jobId: job.id });
+          } catch (err: any) {
+            socket.emit('dom:navigate:response', { success: false, error: err.message, jobId: job.id });
+          }
+        });
+
+        socket.on('auth:check-credentials', async (payload) => {
+          if (typeof chrome !== 'undefined' && chrome.storage) {
+            chrome.storage.local.get([`creds_${payload.hostname}`], (result) => {
+              const creds = result[`creds_${payload.hostname}`];
+              socket.emit('auth:check-credentials:response', { hasCreds: !!creds, creds, jobId: job.id });
+            });
+          } else {
+            socket.emit('auth:check-credentials:response', { hasCreds: false, jobId: job.id });
+          }
+        });
+
+        socket.on('auth:fill-credentials', async () => {
+          const tabId = await tabIdPromise;
+          if (tabId === -1) {
+            socket.emit('auth:fill-credentials:response', { success: true, jobId: job.id });
+            return;
+          }
           chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
-            if (tab && tab.id) {
-              chrome.tabs.sendMessage(tab.id, { action: 'scrape_form' }, (response) => {
-                if (chrome.runtime.lastError || !response || !response.success) {
-                  const errMsg = response?.error || chrome.runtime.lastError?.message || 'Content script failed to respond';
-                  setError(`Failed to extract form fields: ${errMsg}`);
-                  setAgentStatus('failed');
-                  socket.disconnect();
-                  return;
+            if (tab && tab.url) {
+              const domain = new URL(tab.url).hostname;
+              chrome.storage.local.get([`creds_${domain}`], (result) => {
+                const creds = result[`creds_${domain}`];
+                if (creds) {
+                  chrome.tabs.sendMessage(tabId, { action: 'fill_login', creds }, (response) => {
+                    socket.emit('auth:fill-credentials:response', { ...(response || { success: false }), jobId: job.id });
+                  });
+                } else {
+                  socket.emit('auth:fill-credentials:response', { success: false, error: 'No credentials stored', jobId: job.id });
                 }
-
-                // Save pagination info
-                if (response.pagination) {
-                  setPaginationInfo(response.pagination);
-                }
-
-                // Emit start autofill
-                socket.emit('autofill:start', {
-                  jobId: job.id,
-                  fields: response.fields,
-                });
               });
             }
           });
-        } else {
-          // Dev Mock
-          setTimeout(() => {
-            socket.emit('autofill:start', {
-              jobId: job.id,
-              fields: [
-                { id: 'name', name: 'name', type: 'text', label: 'Full Name', required: true },
-                { id: 'email', name: 'email', type: 'email', label: 'Email', required: true },
-                { id: 'project', name: 'proj', type: 'textarea', label: 'Describe a complex project', required: true },
-                { id: 'notice', name: 'notice', type: 'text', label: 'Notice Period', required: true },
-                { id: 'resume', name: 'resume', type: 'file', label: 'Resume', required: true }
-              ],
+        });
+
+        socket.on('otp:retrieve', async () => {
+          if (typeof chrome !== 'undefined' && chrome.runtime) {
+            chrome.runtime.sendMessage({ action: 'get_gmail_otp' }, (response) => {
+              socket.emit('otp:retrieve:response', { otp: response?.otp || null, jobId: job.id });
             });
-          }, 1000);
-        }
+          } else {
+            socket.emit('otp:retrieve:response', { otp: null, jobId: job.id });
+          }
+        });
+
+        socket.on('magic_link:retrieve', async () => {
+          if (typeof chrome !== 'undefined' && chrome.runtime) {
+            chrome.runtime.sendMessage({ action: 'get_gmail_verification' }, (response) => {
+              socket.emit('magic_link:retrieve:response', { url: response?.url || null, jobId: job.id });
+            });
+          } else {
+            socket.emit('magic_link:retrieve:response', { url: null, jobId: job.id });
+          }
+        });
+
+        // Start machine
+        socket.emit('autofill:start', { jobId: job.id });
       });
 
       socket.on('autofill:state-change', (state: AutofillState) => {
         console.log('Agent State Update:', state.status, state);
         setAgentState(state);
 
-        if (state.status === 'completed') {
-          setEditedAnswers({ ...state.answers });
-          setAgentStatus('preview'); // Transition to review preview before injecting!
+        if (state.status === 'HITL_REQUIRED') {
+          if (state.unresolvedFields && state.unresolvedFields.length > 0) {
+            setAgentStatus('waiting_for_user');
+          } else {
+            // No unresolved fields: it is the preview confirmation phase!
+            setEditedAnswers({ ...state.answers });
+            setAgentStatus('preview');
+          }
+        } else if (state.status === 'COMPLETED') {
+          setAgentStatus('autofill_completed');
+          socket.disconnect();
+        } else if (state.status === 'FAILED') {
+          setAgentStatus('failed');
           socket.disconnect();
         } else {
-          setAgentStatus(state.status);
+          setAgentStatus(state.status as any);
         }
       });
 
@@ -336,48 +655,7 @@ export default function App() {
 
   // 4. Inject all answers with validation
   function injectAllAnswers() {
-    if (!agentState || !job) return;
-
-    setLoading(true);
-
-    if (typeof chrome !== 'undefined' && chrome.tabs) {
-      chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
-        if (tab && tab.id) {
-          chrome.tabs.sendMessage(
-            tab.id,
-            {
-              action: 'inject_answers',
-              answers: editedAnswers,
-              jobId: job.id,
-              tailoredResumeUrl: agentState.tailoredResumeUrl,
-              companyName: agentState.companyName
-            },
-            (response) => {
-              setLoading(false);
-              if (response && response.success) {
-                if (response.failedFields && response.failedFields.length > 0) {
-                  setFailedFieldsList(response.failedFields);
-                  setAgentStatus('validation_failed');
-                } else {
-                  setAgentStatus('autofill_completed');
-                  // Trigger download of resume as fallback helper
-                  if (agentState.tailoredResumeUrl) {
-                    triggerResumeDownload(agentState.tailoredResumeUrl, agentState.companyName);
-                  }
-                }
-              } else {
-                setError(response?.error || 'Failed to inject answers into form inputs');
-                setAgentStatus('failed');
-              }
-            }
-          );
-        }
-      });
-    } else {
-      console.log('Dev mock injecting:', editedAnswers);
-      setLoading(false);
-      setAgentStatus('autofill_completed');
-    }
+    approvePreview();
   }
 
   // 5. Send resolved HITL answers
@@ -557,7 +835,7 @@ export default function App() {
             <Button
               variant="outline"
               size="sm"
-              onClick={() => { setError(null); setLoading(true); detectJob('https://mock.com'); }}
+              onClick={detectActiveTabJob}
               className="text-[10px] border-destructive/20 hover:bg-destructive/10 text-destructive cursor-pointer h-7"
             >
               <RefreshCw className="w-3 h-3 mr-1" /> Retry Detection
@@ -566,6 +844,23 @@ export default function App() {
         </Card>
       ) : (
         <div className="flex-1 flex flex-col gap-4">
+          {/* No Active Job Overview Panel */}
+          {!job && agentStatus === 'idle' && (
+            <Card className="border-border/60 bg-card/30 backdrop-blur-sm shadow-sm py-6">
+              <CardContent className="flex flex-col items-center text-center p-6 gap-4">
+                <div className="w-12 h-12 rounded-2xl bg-primary/10 text-primary flex items-center justify-center font-bold shadow-inner select-none animate-pulse">
+                  <Briefcase className="w-6 h-6" />
+                </div>
+                <div className="space-y-1.5">
+                  <h3 className="font-semibold text-sm leading-snug">No Active Job Application</h3>
+                  <p className="text-xs text-muted-foreground max-w-[240px] leading-relaxed">
+                    Open a job from your dashboard and click <strong>Apply</strong>, or navigate to a supported application form to begin.
+                  </p>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
           {/* Job Overview Panel */}
           {job && agentStatus === 'idle' && (
             <Card className="bg-card/50">
@@ -601,21 +896,16 @@ export default function App() {
                 <Loader2 className="w-4 h-4 animate-spin text-primary" />
               </CardHeader>
               <CardContent className="flex flex-col gap-3.5 relative pl-4 border-l border-border">
-                <div className={`relative text-xs flex flex-col gap-0.5 ${agentStatus === 'parsing' ? 'text-primary font-medium' : 'text-muted-foreground'}`}>
-                  <span className={`absolute -left-5 w-2.5 h-2.5 rounded-full border ${agentStatus === 'parsing' ? 'bg-primary border-primary animate-pulse' : 'bg-muted border-border'}`} />
-                  <span>Parsing Form Structure</span>
-                  <span className="text-[10px] opacity-70">Extracting DOM input schema...</span>
-                </div>
-                <div className={`relative text-xs flex flex-col gap-0.5 ${agentStatus === 'mapping' && !agentState?.resumeTailored ? 'text-primary font-medium' : 'text-muted-foreground'}`}>
-                  <span className={`absolute -left-5 w-2.5 h-2.5 rounded-full border ${agentStatus === 'mapping' && !agentState?.resumeTailored ? 'bg-primary border-primary animate-pulse' : 'bg-muted border-border'}`} />
-                  <span>Synthesizing Answers</span>
-                  <span className="text-[10px] opacity-70">RAG Context + Semantic Caching lookup...</span>
-                </div>
-                <div className={`relative text-xs flex flex-col gap-0.5 ${agentState?.resumeTailored === false && agentStatus === 'mapping' ? 'text-primary font-medium' : 'text-muted-foreground'}`}>
-                  <span className={`absolute -left-5 w-2.5 h-2.5 rounded-full border ${agentState?.resumeTailored === false ? 'bg-primary border-primary animate-pulse' : 'bg-muted border-border'}`} />
-                  <span>Tailoring LaTeX Resume</span>
-                  <span className="text-[10px] opacity-70">Compiling offline pdflatex PDF...</span>
-                </div>
+                {(() => {
+                  const info = getAgentStateDescription(agentStatus);
+                  return (
+                    <div className="relative text-xs flex flex-col gap-0.5 text-primary font-medium animate-pulse">
+                      <span className="absolute -left-5 w-2.5 h-2.5 rounded-full bg-primary border border-primary" />
+                      <span>{info.title}</span>
+                      <span className="text-[10px] opacity-70 leading-relaxed text-muted-foreground">{info.subtitle}</span>
+                    </div>
+                  );
+                })()}
               </CardContent>
               {agentState?.progressMessage && (
                 <CardFooter className="pt-3 border-t border-border flex items-center gap-2 text-[10px] text-muted-foreground">
@@ -871,21 +1161,46 @@ export default function App() {
                 )}
 
                 <div className="w-full text-left bg-muted border border-border rounded-lg p-3 text-[10px] text-muted-foreground mt-1">
-                  <p className="font-semibold mb-1 text-foreground">Human-in-the-Loop Actions Required:</p>
-                  <ol className="list-decimal pl-4 space-y-1">
-                    <li>Find the tailored resume PDF in your downloads bar.</li>
-                    <li>Drag & drop it into the "Attach Resume" field on the page.</li>
-                    <li>Perform a quick visual scan of the form elements.</li>
-                    <li>Manually click the "Submit" button to finalize.</li>
-                  </ol>
-                </div>
+                  <p className="font-semibold mb-2 text-foreground">Rate Generated Answers:</p>
+                  <div className="space-y-3 max-h-[160px] overflow-y-auto pr-1 mb-3">
+                    {Object.entries(agentState.answers).map(([id, answer]) => {
+                      const field = agentState.fields.find(f => f.id === id);
+                      if (field?.type === 'file') return null;
+                      const question = field?.label || id;
+                      const currentRating = ratings[question];
 
-                <Button
-                  onClick={resetState}
-                  className="w-full mt-2 cursor-pointer"
-                >
-                  {paginationInfo && paginationInfo.isMultiPage ? 'Scan & Fill Next Page' : 'Scan & Fill Next Page'}
-                </Button>
+                      return (
+                        <div key={id} className="flex flex-col gap-1 border-b border-border/40 pb-2 last:border-b-0">
+                          <span className="font-semibold text-foreground text-[9px]">{question}</span>
+                          <span className="text-muted-foreground italic text-[9px] truncate mb-1">"{answer}"</span>
+                          <div className="flex gap-2">
+                            {(['GOOD', 'NEEDS_IMPROVEMENT', 'WRONG'] as const).map((r) => (
+                              <button
+                                key={r}
+                                onClick={() => setRatings({ ...ratings, [question]: r })}
+                                className={`text-[8px] px-1.5 py-0.5 rounded border transition-colors cursor-pointer ${currentRating === r
+                                  ? r === 'GOOD' ? 'bg-emerald-500/10 border-emerald-500 text-emerald-500'
+                                    : r === 'NEEDS_IMPROVEMENT' ? 'bg-amber-500/10 border-amber-500 text-amber-500'
+                                      : 'bg-destructive/10 border-destructive text-destructive'
+                                  : 'bg-background border-border text-muted-foreground hover:bg-muted'
+                                  }`}
+                              >
+                                {r}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <Button
+                    onClick={submitRatings}
+                    disabled={submittingRatings}
+                    className="w-full mt-1 cursor-pointer text-[10px] h-7 bg-primary"
+                  >
+                    {submittingRatings ? 'Saving...' : 'Submit Ratings & Done'}
+                  </Button>
+                </div>
               </CardContent>
             </Card>
           )}

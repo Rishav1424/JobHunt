@@ -12,6 +12,8 @@ import { logger } from '../../core/logger';
 import { canRun, recordSuccess, recordFailure } from '../../core/scraperHealth';
 import crypto from 'crypto';
 import { SalaryType } from '@prisma/client';
+import { refineAndScoreJob } from '../ai-engine/jobRefiner';
+import { generateEmbedding } from '../../core/gemini';
 
 export const ALL_SCRAPERS: Record<string, JobSource> = {
   adzuna: new AdzunaScraper(),
@@ -198,33 +200,64 @@ async function persistListings(
       });
       if (existing) continue;
 
-      // Task 16: Check description quality before persisting
-      const quality = descriptionQualityScore(listing.description);
-      if (quality === 0) {
-        logger.debug(`Pre-filter: description too short/empty for "${listing.title}" (${listing.description.length} chars) — saving but skipping scoring`);
+      // Inline refinement and scoring
+      const refined = await refineAndScoreJob({
+        title: listing.title,
+        company: listing.company,
+        location: listing.location,
+        isRemote: listing.isRemote,
+        description: listing.description,
+        url: listing.url,
+        salaryMin: listing.salaryMin,
+        salaryMax: listing.salaryMax,
+        salaryRaw: listing.salaryRaw,
+        source: listing.source,
+      });
+
+      if (!refined) {
+        logger.debug(`Pre-filter: discarded job "${listing.title}" due to empty or low quality description`);
+        continue;
       }
 
-      const created = await prisma.job.create({
+      let status = 'SCORED';
+      if (refined.fitScore === 0) {
+        status = 'SKIPPED';
+      }
+
+      // Generate embedding inline
+      let embedding: number[] = [];
+      try {
+        const jdText = `${refined.cleanTitle} at ${listing.company}\n\n${refined.cleanDescription}`;
+        embedding = await generateEmbedding(jdText.slice(0, 8000));
+      } catch (embErr) {
+        logger.warn(`Failed to generate embedding inline for ${listing.title}`, { error: embErr });
+      }
+
+      await prisma.job.create({
         data: {
-          title: listing.title,
+          title: refined.cleanTitle,
           company: listing.company,
-          location: listing.location || 'India',
-          isRemote: listing.isRemote,
-          description: listing.description,
+          location: refined.cleanLocation,
+          isRemote: refined.isRemote,
+          description: refined.cleanDescription,
           url: listing.url,
           applyUrl: listing.applyUrl,
-          salaryMin: listing.salaryMin,
-          salaryMax: listing.salaryMax,
-          salaryRaw: listing.salaryRaw,
-          salaryType,
+          salaryMin: refined.salaryMin,
+          salaryMax: refined.salaryMax,
+          salaryRaw: refined.salaryRaw,
+          salaryType: refined.salaryType as any,
           source: listing.source,
           atsType: listing.atsType,
           dedupeHash,
-          // quality === 0: save as NEW but don't queue for scoring (marked PENDING_ENRICH)
-          status: quality === 0 ? 'SKIPPED' : 'NEW',
+          fitScore: refined.fitScore,
+          fitAnalysis: refined as any,
+          jdStructured: refined.jdStructured as any,
+          embedding,
+          status: status as any,
+          scoredAt: new Date(),
         },
       });
-      if (quality > 0) count++; // Only count scoreable jobs as new
+      if (status === 'SCORED') count++;
     } catch (err: unknown) {
       if ((err as { code?: string }).code !== 'P2002') {
         logger.error('Error persisting job listing', { error: err, title: listing.title });

@@ -5,6 +5,7 @@ import { retrieveRelevantContext, formatRetrievalContext } from './ragService';
 import { lookupCachedAnswer, saveAnswerToBank } from './answerBankService';
 import { compileTailoredResume } from './resumeCompiler';
 import { redis } from '../../core/redis';
+import { formatProfileJsonToText } from './scorer';
 
 export interface AutofillField {
   id: string;      // DOM element identifier/selector
@@ -452,6 +453,13 @@ export class AutofillGraphExecutor {
       logger.error('Failed to retrieve relevant AnswerBank context via pgvector', { error: cacheErr });
     }
 
+    const profileSummary = formatProfileJsonToText(profile) || `
+Name: ${profile.name}
+Email: ${profile.email}
+Phone: ${profile.phone}
+Skills: ${profile.skills.join(', ')}
+`.trim();
+
     // 4. Batch Gemini Prompt
     logger.debug(`Generating batched AI answers for ${remainingFields.length} fields`);
     this.emitProgress(`Querying Gemini to synthesize answers for ${remainingFields.length} fields...`);
@@ -459,11 +467,8 @@ export class AutofillGraphExecutor {
 You are filling out a job application form on behalf of the applicant, Rishav Sharma.
 Answer the following application questions based on the provided background context, previous Q&A history, and the target job description.
 
-Applicant Personal Info:
-- Name: ${profile.name}
-- Email: ${profile.email}
-- Phone: ${profile.phone}
-- Skills: ${profile.skills.join(', ')}
+Applicant Profile & Background:
+${profileSummary}
 
 Job Details:
 - Title: ${this.state.jobTitle}

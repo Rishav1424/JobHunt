@@ -279,3 +279,125 @@ settingsRouter.get('/scoring-drift', async (_req: Request, res: Response) => {
     res.json({ driftDetected: false });
   }
 });
+
+// GET /api/settings/profile-health — get stats about profile RAG chunks
+settingsRouter.get('/profile-health', async (_req: Request, res: Response) => {
+  try {
+    const profile = await prisma.userProfile.findFirst();
+    const knowledgeChunksCount = await prisma.knowledgeChunk.count();
+    const answerBankCount = await prisma.answerBank.count();
+
+    const categoryGroups = await prisma.knowledgeChunk.groupBy({
+      by: ['category'],
+      _count: {
+        _all: true
+      }
+    });
+
+    const categoryCounts = categoryGroups.reduce((acc, curr) => {
+      acc[curr.category] = curr._count._all;
+      return acc;
+    }, {} as Record<string, number>);
+
+    const expectedCategories = [
+      'education',
+      'technical_strength',
+      'experience',
+      'project',
+      'behavioral',
+      'career_narrative',
+      'company_motivation',
+      'opinions'
+    ];
+
+    const checklist = expectedCategories.map(cat => ({
+      category: cat,
+      exists: (categoryCounts[cat] || 0) > 0,
+      count: categoryCounts[cat] || 0
+    }));
+
+    res.json({
+      profileSeeded: !!profile,
+      profileName: profile?.name || 'Not Seeded Yet',
+      knowledgeChunksCount,
+      answerBankCount,
+      categoryCounts,
+      checklist
+    });
+  } catch (error) {
+    logger.error('Failed to get profile health metrics', { error });
+    res.status(500).json({ error: 'Failed to fetch profile health metrics' });
+  }
+});
+
+// POST /api/settings/profile/seed — trigger ProfileData.md seeding in background
+settingsRouter.post('/profile/seed', async (_req: Request, res: Response) => {
+  try {
+    const { fork } = require('child_process');
+    const scriptPath = path.resolve(__dirname, '../scripts/seed-profile-doc.ts');
+    
+    logger.info(`Manually triggering profile seeding from endpoint using fork: ${scriptPath}`);
+    const child = fork(scriptPath, [], {
+      stdio: 'inherit',
+      env: { ...process.env }
+    });
+
+    child.on('error', (err: any) => {
+      logger.error('Profile seeding child process error', { error: err });
+    });
+
+    res.json({ success: true, message: 'Profile document re-seeding triggered in background.' });
+  } catch (error) {
+    logger.error('Failed to trigger profile seeding', { error });
+    res.status(500).json({ error: 'Failed to trigger profile seeding' });
+  }
+});
+
+// GET /api/settings/profile-data — get ProfileData.md file contents
+settingsRouter.get('/profile-data', async (_req: Request, res: Response) => {
+  try {
+    const rootDir = path.resolve(__dirname, '../../..');
+    const profileDataPath = path.join(rootDir, 'ProfileData.md');
+    if (!fs.existsSync(profileDataPath)) {
+      return res.status(404).json({ error: 'ProfileData.md file not found in workspace root' });
+    }
+    const content = fs.readFileSync(profileDataPath, 'utf-8');
+    res.json({ content });
+  } catch (error) {
+    logger.error('Failed to read ProfileData.md', { error });
+    res.status(500).json({ error: 'Failed to read ProfileData.md' });
+  }
+});
+
+// POST /api/settings/profile-data — update ProfileData.md file contents and trigger seed
+settingsRouter.post('/profile-data', async (req: Request, res: Response) => {
+  try {
+    const { content } = req.body;
+    if (typeof content !== 'string') {
+      return res.status(400).json({ error: 'Content must be a string' });
+    }
+    
+    const rootDir = path.resolve(__dirname, '../../..');
+    const profileDataPath = path.join(rootDir, 'ProfileData.md');
+    fs.writeFileSync(profileDataPath, content, 'utf-8');
+    
+    const { fork } = require('child_process');
+    const scriptPath = path.resolve(__dirname, '../scripts/seed-profile-doc.ts');
+    
+    logger.info(`Triggering profile seeding after profile-data update using fork: ${scriptPath}`);
+    const child = fork(scriptPath, [], {
+      stdio: 'inherit',
+      env: { ...process.env }
+    });
+
+    child.on('error', (err: any) => {
+      logger.error('Profile seeding child process error', { error: err });
+    });
+
+    res.json({ success: true, message: 'ProfileData.md updated and re-seeding triggered in background.' });
+  } catch (error) {
+    logger.error('Failed to update ProfileData.md', { error });
+    res.status(500).json({ error: 'Failed to update ProfileData.md' });
+  }
+});
+

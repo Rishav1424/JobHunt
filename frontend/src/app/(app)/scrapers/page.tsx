@@ -105,6 +105,15 @@ export default function ScrapersPage() {
 
   useEffect(() => {
     fetchHealth();
+    jobsApi.getSystemLogs()
+      .then((data) => {
+        if (data && Array.isArray(data)) {
+          setLogs(data);
+        }
+      })
+      .catch((err) => {
+        console.error('Failed to load system logs cache', err);
+      });
     const interval = setInterval(fetchHealth, 10000);
     return () => clearInterval(interval);
   }, []);

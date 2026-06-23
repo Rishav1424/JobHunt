@@ -116,35 +116,6 @@ export function createScrapingWorker(): Worker {
           emitNewJobs(newJobs);
         }
 
-        // Enqueue scoring for all NEW jobs atomically in batches of 3
-        const result = await prisma.$queryRaw<{ id: string }[]>`
-          UPDATE "Job"
-          SET status = 'SCORING', "updatedAt" = NOW()
-          WHERE status = 'NEW'
-          RETURNING id
-        `;
-        const ids = result.map((r) => r.id);
-
-        if (ids.length > 0) {
-          const chunks: string[][] = [];
-          for (let i = 0; i < ids.length; i += 3) {
-            chunks.push(ids.slice(i, i + 3));
-          }
-
-          const scoringJobs = chunks.map((chunkIds) => ({
-            name: 'score-job-batch',
-            data: { jobIds: chunkIds },
-            opts: {
-              priority: 1,
-              // Deterministic jobId prevents duplicate batch submissions (BullMQ dedup)
-              jobId: `batch-${chunkIds[0]}-${chunkIds[chunkIds.length - 1]}`,
-            },
-          }));
-
-          await scoringQueue.addBulk(scoringJobs);
-          logger.info(`Enqueued ${scoringJobs.length} scoring job batches (total ${ids.length} jobs)`);
-        }
-
         emitScrapingStatus('completed', { total, newJobs, scraperResults, targetScraperName });
         return { total, newJobs, scraperResults };
       } catch (err: any) {

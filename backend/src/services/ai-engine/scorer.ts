@@ -240,6 +240,12 @@ export function formatProfileJsonToText(profile: any): string {
       text += `- **Deal Breakers:** ${(json.preferences.dealBreakers || []).join(', ')}\n`;
     }
   }
+  if (json.competitiveEdge) {
+    text += `### Competitive Edge:\n${json.competitiveEdge}\n`;
+  }
+  if (json.careerGoals) {
+    text += `### Career Goals:\n${json.careerGoals}\n`;
+  }
   return text.trim();
 }
 
@@ -705,7 +711,8 @@ ${strippedResume.slice(0, 3000)}
               AND id != ${jobId}
               AND status = 'SCORED'
               AND "scrapedAt" > NOW() - INTERVAL '7 days'
-              AND 1 - (embedding_vec <=> cast(${vectorStr} as vector)) > 0.95
+              AND embedding IS NOT NULL
+              AND 1 - (cast(embedding::real[] as vector) <=> cast(${vectorStr} as vector)) > 0.95
             LIMIT 1
           `;
           if (potentialDups.length > 0) {
@@ -907,7 +914,9 @@ export async function ensureProfileJson(profile: { id: string; profileJson: any;
 {
   "facts": { "name": string, "email": string, "phone": string, "location": string, "graduationDate": string, "college": string, "degree": string, "cgpa": string, "currentRole": string, "noticePeriod": string },
   "skills": [{ "name": string, "level": "strong|comfortable|familiar", "context": string }],
-  "preferences": { "rolePreferences": { "primary": string[], "avoid": string[] }, "domainInterests": string[], "dealBreakers": string[] }
+  "preferences": { "rolePreferences": { "primary": string[], "avoid": string[] }, "domainInterests": string[], "dealBreakers": string[] },
+  "competitiveEdge": string,
+  "careerGoals": string
 }
 
 Resume:

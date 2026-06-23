@@ -1,23 +1,22 @@
 'use client';
 
 import React, { useEffect, useState, useCallback } from 'react';
-import { jobsApi } from '@/lib/api';
+import { jobsApi, settingsApi } from '@/lib/api';
 import { useSocket } from '@/lib/socket';
 import {
   Briefcase,
   TrendingUp,
   Send,
-  RefreshCw,
   Zap,
   ArrowRight,
   BarChart3,
-  Flame,
-  Globe,
   Bell,
   Cpu,
   CheckCircle,
-  Activity,
-  AlertTriangle
+  AlertTriangle,
+  Award,
+  PieChart as PieIcon,
+  LineChart as LineIcon
 } from 'lucide-react';
 import Link from 'next/link';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -26,7 +25,10 @@ import { Progress } from '@/components/ui/progress';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Badge } from '@/components/ui/badge';
-import { ScrollArea } from '@/components/ui/scroll-area';
+import {
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
+  AreaChart, Area, Cell
+} from 'recharts';
 
 interface Stats {
   total: number;
@@ -41,53 +43,86 @@ interface Stats {
 }
 
 const STAT_CARDS = [
-  { key: 'today', label: 'Jobs Scraped Today', icon: Zap, color: 'text-indigo-400 bg-indigo-500/10' },
-  { key: 'scored', label: 'Pending Review', icon: Briefcase, color: 'text-violet-400 bg-violet-500/10' },
-  { key: 'approved', label: 'Approved Roles', icon: TrendingUp, color: 'text-emerald-400 bg-emerald-500/10' },
+  { key: 'total', label: 'Total Scraped', icon: Briefcase, color: 'text-blue-400 bg-blue-500/10' },
+  { key: 'today', label: 'Scraped Today', icon: Zap, color: 'text-indigo-400 bg-indigo-500/10' },
+  { key: 'scored', label: 'Pending Review', icon: Cpu, color: 'text-violet-400 bg-violet-500/10' },
+  { key: 'approved', label: 'Approved Roles', icon: CheckCircle, color: 'text-emerald-400 bg-emerald-500/10' },
   { key: 'applied', label: 'Applications Sent', icon: Send, color: 'text-pink-400 bg-pink-500/10' },
+  { key: 'conversion', label: 'Conversion Rate', icon: TrendingUp, color: 'text-amber-400 bg-amber-500/10' },
 ] as const;
 
-type StatKeys = 'today' | 'scored' | 'approved' | 'applied';
+type StatKeys = 'total' | 'today' | 'scored' | 'approved' | 'applied' | 'conversion';
+
+const COLORS = ['#3b82f6', '#8b5cf6', '#ec4899', '#f43f5e', '#10b981', '#f59e0b', '#06b6d4', '#64748b'];
 
 export default function DashboardPage() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [loading, setLoading] = useState(true);
-  const [scraping, setScraping] = useState(false);
   const [newJobsFlash, setNewJobsFlash] = useState<number | null>(null);
-  const [liveTicker, setLiveTicker] = useState<any[]>([]);
   const [dreamAlerts, setDreamAlerts] = useState<any[]>([]);
+  
+  // Analytics State
+  const [distribution, setDistribution] = useState<{ name: string; count: number }[]>([]);
+  const [funnelData, setFunnelData] = useState<{ name: string; value: number }[]>([]);
+  const [threshold, setThreshold] = useState<number>(65);
+  const [isMounted, setIsMounted] = useState(false);
 
   const loadStats = useCallback(async () => {
     try {
-      const data = await jobsApi.stats();
-      setStats(data);
+      const [statsData, settingsData, targetJobs, jobsData] = await Promise.all([
+        jobsApi.stats(),
+        settingsApi.get().catch(() => ({ fitScoreThreshold: 65 })),
+        jobsApi.list({ limit: 15, status: 'SCORED' }),
+        jobsApi.list({ limit: 500 }),
+      ]);
 
-      // Fetch recent scored jobs to seed ticker
-      const recentScored = await jobsApi.list({ limit: 5, status: 'SCORED' });
-      if (recentScored && recentScored.jobs) {
-        setLiveTicker(recentScored.jobs.map((j: any) => ({
-          jobId: j.id,
-          title: j.title,
-          company: j.company,
-          fitScore: j.fitScore,
-          verdict: j.fitAnalysis?.verdict || 'Awaiting Review'
-        })));
-      }
+      setStats(statsData);
+      setThreshold(settingsData.fitScoreThreshold);
 
-      // Fetch all scored target jobs for dream company alerts
-      const targetJobs = await jobsApi.list({ limit: 15, status: 'SCORED' });
+      // Funnel data
+      setFunnelData([
+        { name: 'Scraped', value: statsData.total },
+        { name: 'Scored', value: statsData.scored + statsData.approved + statsData.applied },
+        { name: 'Approved', value: statsData.approved + statsData.applied },
+        { name: 'Applied', value: statsData.applied },
+      ]);
+
+      // Dream alerts
       if (targetJobs && targetJobs.jobs) {
         const filtered = targetJobs.jobs.filter((j: any) => j.fitAnalysis?.isTargetCompany === true || j.fitScore >= 85);
         setDreamAlerts(filtered);
       }
+
+      // Score distribution
+      if (jobsData && jobsData.jobs) {
+        const scoredJobs = jobsData.jobs.filter((j: any) => j.fitScore !== undefined && j.fitScore > 0);
+        const bins = [
+          { name: '0-20', count: 0 },
+          { name: '21-40', count: 0 },
+          { name: '41-60', count: 0 },
+          { name: '61-80', count: 0 },
+          { name: '81-100', count: 0 },
+        ];
+
+        scoredJobs.forEach((j: any) => {
+          const score = j.fitScore;
+          if (score <= 20) bins[0].count++;
+          else if (score <= 40) bins[1].count++;
+          else if (score <= 60) bins[2].count++;
+          else if (score <= 80) bins[3].count++;
+          else bins[4].count++;
+        });
+        setDistribution(bins);
+      }
     } catch (err) {
-      console.error('Failed to load stats', err);
+      console.error('Failed to load dashboard data', err);
     } finally {
       setLoading(false);
     }
   }, []);
 
   useEffect(() => {
+    setIsMounted(true);
     loadStats();
   }, [loadStats]);
 
@@ -98,42 +133,12 @@ export default function DashboardPage() {
     loadStats();
   });
 
-  // Real-time listener: job scored by Gemini
+  // Real-time listener: job scored by Gemini (causes dashboard charts/metrics refresh)
   useSocket('job:scored', (data: any) => {
-    // data structure: { jobId, fitScore, fitAnalysis }
-    // Fetch job details to get title/company or build it from analysis
-    const title = data.fitAnalysis?.title || 'Software Engineer';
-    const company = data.fitAnalysis?.company || 'Company';
-
-    setLiveTicker((prev) => [
-      {
-        jobId: data.jobId,
-        title,
-        company,
-        fitScore: data.fitScore,
-        verdict: data.fitAnalysis?.verdict || 'Scored'
-      },
-      ...prev
-    ].slice(0, 10));
-
-    // If it's a target company or high score, add to alerts
-    if (data.fitAnalysis?.isTargetCompany || data.fitScore >= 85) {
-      setDreamAlerts((prev) => [
-        {
-          id: data.jobId,
-          title,
-          company,
-          fitScore: data.fitScore,
-          fitAnalysis: data.fitAnalysis
-        },
-        ...prev
-      ].slice(0, 5));
-    }
-
-    loadStats(); // Refresh stats cards
+    loadStats();
   });
 
-  if (loading) {
+  if (loading || !isMounted) {
     return (
       <div className="p-6 space-y-6 max-w-6xl mx-auto bg-background min-h-screen text-foreground font-sans">
         <div className="flex items-center justify-between">
@@ -143,10 +148,17 @@ export default function DashboardPage() {
           </div>
           <Skeleton className="h-10 w-36" />
         </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          {Array.from({ length: 4 }).map((_, i) => (
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
+          {Array.from({ length: 6 }).map((_, i) => (
             <Skeleton key={i} className="h-28 rounded-xl" />
           ))}
+        </div>
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <div className="lg:col-span-2 space-y-6">
+            <Skeleton className="h-40 rounded-xl" />
+            <Skeleton className="h-40 rounded-xl" />
+          </div>
+          <Skeleton className="h-80 rounded-xl" />
         </div>
       </div>
     );
@@ -156,6 +168,20 @@ export default function DashboardPage() {
   const jobsScoredToday = stats?.today || 0;
   const geminiCapacityUsed = Math.min(100, Math.round((jobsScoredToday / 150) * 100)); // assume 150 target calls/day
 
+  const getStatValue = (key: string): number => {
+    if (!stats) return 0;
+    if (key === 'conversion') {
+      return stats.total ? Math.round(((stats.approved + stats.applied) / stats.total) * 100) : 0;
+    }
+    const val = stats[key as keyof Stats];
+    return typeof val === 'number' ? val : 0;
+  };
+
+  const sourceChartData = stats?.bySource.map(({ source, count }) => ({
+    name: source.charAt(0).toUpperCase() + source.slice(1),
+    Jobs: count,
+  })) || [];
+
   return (
     <div className="p-6 space-y-8 max-w-6xl mx-auto bg-background min-h-screen text-foreground font-sans">
 
@@ -163,10 +189,10 @@ export default function DashboardPage() {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h1 className="text-3xl font-extrabold tracking-tight bg-linear-to-r from-foreground via-foreground/90 to-muted-foreground bg-clip-text text-transparent">
-            Pipeline Dashboard
+            Pipeline Dashboard & Analytics
           </h1>
           <p className="text-muted-foreground text-sm mt-1.5">
-            Welcome back, Rishav Sharma. Real-time updates from NIT Durgapur '26 automation hub.
+            Welcome back, Rishav Sharma. Real-time metrics and pipeline insights from NIT Durgapur '26 automation hub.
           </p>
         </div>
       </div>
@@ -182,15 +208,15 @@ export default function DashboardPage() {
       )}
 
       {/* Stat Cards */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-6">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-6">
         {STAT_CARDS.map(({ key, label, icon: Icon, color }) => (
-          <Card key={key} className=" bg-card/40 backdrop-blur-md ">
-            <CardContent>
+          <Card key={key} className="bg-card/40 backdrop-blur-md">
+            <CardContent className="p-4">
               <CardTitle className="text-xs font-bold uppercase tracking-tight md:tracking-wider text-muted-foreground">{label}</CardTitle>
-              <div className="flex gap-4 mt-4">
-                <Icon className={`size-8 p-1.5 rounded-lg ${color}`} />
-                <div className="text-3xl font-extrabold tracking-tight">
-                  {stats?.[key as StatKeys] ?? 0}
+              <div className="flex gap-4 mt-4 items-center">
+                <Icon className={`size-8 p-1.5 rounded-lg shrink-0 ${color}`} />
+                <div className="text-2xl font-extrabold tracking-tight">
+                  {getStatValue(key)}{key === 'conversion' && '%'}
                 </div>
               </div>
             </CardContent>
@@ -198,66 +224,124 @@ export default function DashboardPage() {
         ))}
       </div>
 
-      {/* Main Grid: Analytical Stats & Live Ticker */}
+      {/* Two-Column Grid Content */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-
-        {/* Left 2 Cols: Stats, Distribution & Usage */}
+        
+        {/* Left Column (Main - 2/3 Width): Charts & Calibrations */}
         <div className="lg:col-span-2 space-y-6">
+          {/* Pipeline Calibration & Filter Health */}
+          <Card className="border border-border/80 bg-linear-to-r from-primary/5 via-card/40 to-muted/5 backdrop-blur-md shadow-lg">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-bold flex items-center gap-2 text-primary">
+                <Award className="h-4.5 w-4.5" /> Pipeline Calibration & Filter Health
+              </CardTitle>
+              <CardDescription className="text-xs">
+                Review how your profile fit threshold matches scraped job quality distribution.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="pt-2 pb-6">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6 items-center">
+                <div className="space-y-1">
+                  <span className="text-xs text-muted-foreground font-semibold">Active Filter Threshold</span>
+                  <p className="text-3xl font-extrabold">{threshold}% Match</p>
+                  <p className="text-[11px] text-muted-foreground mt-0.5 font-medium">
+                    Jobs scoring below this threshold are skipped during ingestion.
+                  </p>
+                </div>
+                <div className="space-y-1">
+                  <span className="text-xs text-muted-foreground font-semibold">Average Scored Fit</span>
+                  <p className={`text-3xl font-extrabold ${(stats?.avgFitScore ?? 0) >= threshold ? 'text-emerald-400' : 'text-amber-400'}`}>
+                    {stats?.avgFitScore ?? 0}% Match
+                  </p>
+                  <p className="text-[11px] text-muted-foreground mt-0.5 font-medium">
+                    Average score computed by Gemini across all active and scored job descriptions.
+                  </p>
+                </div>
+                <div className="p-3.5 rounded-xl border border-border/40 bg-muted/20 text-xs leading-relaxed space-y-1">
+                  <span className="font-bold flex items-center gap-1 text-foreground">
+                    {Math.abs((stats?.avgFitScore ?? 0) - threshold) <= 10 ? (
+                      <>
+                        <CheckCircle className="h-3.5 w-3.5 text-emerald-400" /> System Well Calibrated
+                      </>
+                    ) : (stats?.avgFitScore ?? 0) > threshold ? (
+                      <>
+                        <CheckCircle className="h-3.5 w-3.5 text-emerald-400 animate-pulse" /> High Yield Calibration
+                      </>
+                    ) : (
+                      <>
+                        <AlertTriangle className="h-3.5 w-3.5 text-amber-500 animate-pulse" /> Calibration Drift Detected
+                      </>
+                    )}
+                  </span>
+                  <p className="text-[11px] text-muted-foreground leading-normal">
+                    {(stats?.avgFitScore ?? 0) > threshold + 15
+                      ? 'Your profile average is significantly higher than the threshold. You are in a target-rich pipeline with high approval rates.'
+                      : (stats?.avgFitScore ?? 0) < threshold - 5
+                      ? 'Your profile average is below the threshold. Scraped listings might be skipped frequently. Consider updating target roles or skills in settings.'
+                      : 'Your threshold is in sync with listing averages. Scrapers are correctly targeting relevant roles for your profile.'}
+                  </p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
 
+          {/* Recharts Grid */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
-
-            {/* Avg Fit Score */}
-            <Card className=" bg-card/40 backdrop-blur-md">
-              <CardHeader className="pb-2">
-                <CardTitle className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Average Profile Fit</CardTitle>
+            {/* Fit Score Distribution Area Chart */}
+            <Card>
+              <CardHeader className="pb-4">
+                <CardTitle className="text-sm font-semibold flex items-center gap-1.5">
+                  <LineIcon className="w-4 h-4 text-muted-foreground" /> Fit Score Distribution
+                </CardTitle>
+                <CardDescription>Jobs grouped by matching percentage bands.</CardDescription>
               </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="flex items-baseline gap-2">
-                  <span className="text-5xl font-extrabold text-primary">
-                    {stats?.avgFitScore ?? 0}
-                  </span>
-                  <span className="text-muted-foreground text-xs font-semibold">/ 100</span>
-                </div>
-
-                <div className="space-y-1.5">
-                  <Progress value={stats?.avgFitScore ?? 0} className="h-2" />
-                  <div className="flex justify-between text-[10px] text-muted-foreground font-medium">
-                    <span>Low Fit (0)</span>
-                    <span>Target: 65</span>
-                    <span>High Fit (100)</span>
-                  </div>
-                </div>
+              <CardContent className="h-64 pt-2">
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart data={distribution} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                    <defs>
+                      <linearGradient id="colorCount" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="hsl(var(--chart-1))" stopOpacity={0.3}/>
+                        <stop offset="95%" stopColor="hsl(var(--chart-1))" stopOpacity={0}/>
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                    <XAxis dataKey="name" stroke="hsl(var(--muted-foreground))" style={{ fontSize: 10 }} />
+                    <YAxis stroke="hsl(var(--muted-foreground))" style={{ fontSize: 10 }} />
+                    <Tooltip contentStyle={{ backgroundColor: 'hsl(var(--popover))', borderColor: 'hsl(var(--border))', borderRadius: 8, fontSize: 11, color: 'hsl(var(--popover-foreground))' }} />
+                    <Area type="monotone" dataKey="count" name="Jobs" stroke="hsl(var(--chart-1))" strokeWidth={2} fillOpacity={1} fill="url(#colorCount)" />
+                  </AreaChart>
+                </ResponsiveContainer>
               </CardContent>
             </Card>
 
-            {/* Gemini usage stats */}
-            <Card className=" bg-card/40 backdrop-blur-md">
-              <CardHeader className="pb-2">
-                <CardTitle className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Gemini LLM Quota Rate</CardTitle>
+            {/* Jobs by Source Bar Chart */}
+            <Card>
+              <CardHeader className="pb-4">
+                <CardTitle className="text-sm font-semibold flex items-center gap-1.5">
+                  <PieIcon className="w-4 h-4 text-muted-foreground" /> Jobs by Source
+                </CardTitle>
+                <CardDescription>Listing volume breakdown by scraper channels.</CardDescription>
               </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="flex items-baseline gap-2">
-                  <span className="text-5xl font-extrabold text-primary">
-                    {geminiCapacityUsed}%
-                  </span>
-                  <span className="text-muted-foreground text-xs font-semibold">used today</span>
-                </div>
-
-                <div className="space-y-1.5">
-                  <Progress value={geminiCapacityUsed} className="h-2" />
-                  <div className="flex justify-between text-[10px] text-muted-foreground font-medium">
-                    <span>0 call</span>
-                    <span>Limit: 15 RPM</span>
-                    <span>150 calls</span>
-                  </div>
-                </div>
+              <CardContent className="h-64 pt-2">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={sourceChartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                    <XAxis dataKey="name" stroke="hsl(var(--muted-foreground))" style={{ fontSize: 10 }} />
+                    <YAxis stroke="hsl(var(--muted-foreground))" style={{ fontSize: 10 }} />
+                    <Tooltip contentStyle={{ backgroundColor: 'hsl(var(--popover))', borderColor: 'hsl(var(--border))', borderRadius: 8, fontSize: 11, color: 'hsl(var(--popover-foreground))' }} />
+                    <Bar dataKey="Jobs" fill="hsl(var(--chart-1))" radius={[4, 4, 0, 0]}>
+                      {sourceChartData.map((entry, index) => (
+                        <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
               </CardContent>
             </Card>
-
           </div>
 
           {/* Jobs by Source distribution */}
-          <Card className=" bg-card/40 backdrop-blur-md">
+          <Card className="bg-card/40 backdrop-blur-md">
             <CardHeader className="pb-2 flex flex-row items-center justify-between">
               <div className="space-y-1">
                 <CardTitle className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Jobs Distribution by Source</CardTitle>
@@ -280,31 +364,57 @@ export default function DashboardPage() {
               )}
             </CardContent>
           </Card>
+        </div>
 
-          {/* Scraper Run Logs / Circuits Health */}
-          <Card className=" bg-card/40 backdrop-blur-md">
+        {/* Right Column (Sidebar - 1/3 Width): Stats & Alerts */}
+        <div className="space-y-6">
+          {/* Avg Fit Score */}
+          <Card className="bg-card/40 backdrop-blur-md">
             <CardHeader className="pb-2">
-              <CardTitle className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Scraper Health Logs</CardTitle>
+              <CardTitle className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Average Profile Fit</CardTitle>
             </CardHeader>
-            <CardContent className="pt-2">
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
-                {stats?.scraperHealth && Object.entries(stats.scraperHealth).slice(0, 8).map(([name, h]) => (
-                  <div key={name} className="p-2 rounded-lg bg-muted/40 border  flex flex-col gap-1">
-                    <span className="capitalize font-bold text-foreground">{name}</span>
-                    <div className="flex items-center gap-1 mt-0.5">
-                      <span className={`h-1.5 w-1.5 rounded-full ${h.state === 'CLOSED' ? 'bg-emerald-500 animate-pulse' : 'bg-destructive'}`} />
-                      <span className="text-[10px] text-muted-foreground font-medium">{h.state === 'CLOSED' ? 'Healthy' : 'Tripped'}</span>
-                    </div>
-                  </div>
-                ))}
+            <CardContent className="space-y-4">
+              <div className="flex items-baseline gap-2">
+                <span className="text-5xl font-extrabold text-primary">
+                  {stats?.avgFitScore ?? 0}
+                </span>
+                <span className="text-muted-foreground text-xs font-semibold">/ 100</span>
+              </div>
+
+              <div className="space-y-1.5">
+                <Progress value={stats?.avgFitScore ?? 0} className="h-2" />
+                <div className="flex justify-between text-[10px] text-muted-foreground font-medium">
+                  <span>Low Fit (0)</span>
+                  <span>Target: 65</span>
+                  <span>High Fit (100)</span>
+                </div>
               </div>
             </CardContent>
           </Card>
 
-        </div>
+          {/* Gemini usage stats */}
+          <Card className="bg-card/40 backdrop-blur-md">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Gemini LLM Quota Rate</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex items-baseline gap-2">
+                <span className="text-5xl font-extrabold text-primary">
+                  {geminiCapacityUsed}%
+                </span>
+                <span className="text-muted-foreground text-xs font-semibold">used today</span>
+              </div>
 
-        {/* Right Pane: Live Ticker & Dream Company Alerts */}
-        <div className="space-y-6">
+              <div className="space-y-1.5">
+                <Progress value={geminiCapacityUsed} className="h-2" />
+                <div className="flex justify-between text-[10px] text-muted-foreground font-medium">
+                  <span>0 call</span>
+                  <span>Limit: 15 RPM</span>
+                  <span>150 calls</span>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
 
           {/* Dream Company Alerts */}
           {dreamAlerts.length > 0 && (
@@ -315,7 +425,7 @@ export default function DashboardPage() {
               </CardHeader>
               <CardContent className="space-y-3 pt-2">
                 {dreamAlerts.slice(0, 3).map((job) => (
-                  <div key={job.id} className="text-xs border-b  pb-2 last:border-0 last:pb-0">
+                  <div key={job.id} className="text-xs border-b pb-2 last:border-0 last:pb-0">
                     <div className="flex justify-between items-center">
                       <span className="font-extrabold text-foreground uppercase truncate max-w-[140px]">{job.company}</span>
                       <Badge className="bg-primary/20 text-primary border-primary/30 text-[9px] px-1.5">{job.fitScore}% Fit</Badge>
@@ -330,87 +440,42 @@ export default function DashboardPage() {
             </Card>
           )}
 
-          {/* Live Scoring Ticker */}
-          <Card className=" bg-card/40 backdrop-blur-md">
-            <CardHeader className="pb-2 flex flex-row items-center justify-between">
-              <div className="space-y-1">
-                <CardTitle className="text-xs font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
-                  <Activity className="h-4 w-4 text-primary animate-pulse" />
-                  Live Scoring Ticker
-                </CardTitle>
-              </div>
-            </CardHeader>
-            <CardContent className="pt-2">
-              <ScrollArea className="max-h-[360px]">
-                <div className="space-y-4 pr-2">
-                  <div className="flex flex-col gap-4">
-                    {liveTicker.length === 0 ? (
-                      <p className="text-xs text-muted-foreground py-6 text-center italic">Awaiting live scoring events...</p>
-                    ) : (
-                      liveTicker.map((item, idx) => (
-                        <div
-                          key={`${item.jobId}-${idx}`}
-                          className="p-2.5 rounded-lg bg-muted/40 border  flex justify-between items-start gap-2 animate-in fade-in slide-in-from-left-2 duration-300"
-                        >
-                          <div className="space-y-1 min-w-0">
-                            <p className="font-extrabold text-[10px] text-muted-foreground uppercase truncate">{item.company}</p>
-                            <p className="font-bold text-xs text-foreground truncate">{item.title}</p>
-                            <p className="text-[10px] text-muted-foreground truncate italic">{item.verdict}</p>
-                          </div>
-                          <Badge className={`text-[10px] font-bold px-1.5 shrink-0 ${item.fitScore >= 80
-                            ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
-                            : item.fitScore >= 60
-                              ? 'bg-amber-500/10 text-amber-400 border-amber-500/20'
-                              : 'bg-red-500/10 text-red-400 border-red-500/20'
-                            }`}>
-                            {item.fitScore}%
-                          </Badge>
-                        </div>
-                      ))
-                    )}
+          {/* Quick Access links */}
+          <div className="flex flex-col gap-4">
+            <Link href="/jobs?status=SCORED">
+              <Card className="bg-card/30 hover:bg-card/50 hover:transition-all duration-300 cursor-pointer group">
+                <CardContent className="flex items-center justify-between p-6">
+                  <div>
+                    <p className="text-sm font-bold text-foreground group-hover:text-primary transition-colors">Review Scored Jobs</p>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      {stats?.scored || 0} jobs awaiting approval.
+                    </p>
                   </div>
-                </div>
-              </ScrollArea>
-            </CardContent>
-          </Card>
+                  <Button variant="outline" size="icon" className="shrink-0 hover:bg-muted cursor-pointer">
+                    <ArrowRight className="w-4 h-4" />
+                  </Button>
+                </CardContent>
+              </Card>
+            </Link>
 
+            <Link href="/onboarding">
+              <Card className="bg-card/30 hover:bg-card/50 hover:transition-all duration-300 cursor-pointer group">
+                <CardContent className="flex items-center justify-between p-6">
+                  <div>
+                    <p className="text-sm font-bold text-foreground group-hover:text-primary transition-colors">Onboarding Wizard</p>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Recalibrate profile and seed the AnswerBank.
+                    </p>
+                  </div>
+                  <Button variant="outline" size="icon" className="shrink-0 hover:bg-muted cursor-pointer">
+                    <ArrowRight className="w-4 h-4" />
+                  </Button>
+                </CardContent>
+              </Card>
+            </Link>
+          </div>
         </div>
 
-      </div>
-
-      {/* Quick Access links */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <Link href="/jobs?status=SCORED">
-          <Card className=" bg-card/30 hover:bg-card/50 hover: transition-all duration-300 cursor-pointer group">
-            <CardContent className="flex items-center justify-between">
-              <div>
-                <p className="text-sm font-bold text-foreground group-hover:text-primary transition-colors">Review Scored Jobs</p>
-                <p className="text-xs text-muted-foreground mt-1">
-                  {stats?.scored || 0} jobs awaiting approval.
-                </p>
-              </div>
-              <Button variant="outline" size="icon" className="shrink-0  hover:bg-muted cursor-pointer">
-                <ArrowRight className="w-4 h-4" />
-              </Button>
-            </CardContent>
-          </Card>
-        </Link>
-
-        <Link href="/onboarding">
-          <Card className=" bg-card/30 hover:bg-card/50 hover: transition-all duration-300 cursor-pointer group">
-            <CardContent className="flex items-center justify-between">
-              <div>
-                <p className="text-sm font-bold text-foreground group-hover:text-primary transition-colors">Onboarding Wizard</p>
-                <p className="text-xs text-muted-foreground mt-1">
-                  Recalibrate profile and seed the AnswerBank.
-                </p>
-              </div>
-              <Button variant="outline" size="icon" className="shrink-0  hover:bg-muted cursor-pointer">
-                <ArrowRight className="w-4 h-4" />
-              </Button>
-            </CardContent>
-          </Card>
-        </Link>
       </div>
 
     </div>

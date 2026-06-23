@@ -127,8 +127,14 @@ export default function QueuesPage() {
                           <Cpu className="h-5 w-5 text-primary" />
                           <CardTitle className="text-lg font-bold text-foreground">{q.displayName}</CardTitle>
                         </div>
-                        <CardDescription className="text-xs text-muted-foreground">
+                        <CardDescription className="text-xs text-muted-foreground mt-1">
                           System name: <code className="text-primary bg-primary/10 px-1.5 py-0.5 rounded text-[10px]">{q.name}</code>
+                          <span className="block mt-2 text-[11px] text-muted-foreground font-medium">
+                            {q.name === 'job-scraping' && 'Runs scraper workers and performs inline Gemini scoring/refinement.'}
+                            {q.name === 'job-scoring' && 'Handles manual re-scoring or stuck job rescue/recovery operations.'}
+                            {q.name === 'resume-compilation' && 'Generates and compiles tailored LaTeX resumes to PDF in the background.'}
+                            {q.name === 'weight-recalibration' && 'Recomputes semantic profile dimensions based on calibration feedback.'}
+                          </span>
                         </CardDescription>
                       </div>
 

@@ -110,3 +110,66 @@ applicationsRouter.get('/by-job/:jobId', async (req: Request, res: Response) => 
     res.status(500).json({ error: 'Failed to fetch application' });
   }
 });
+
+// POST /api/applications/:id/answer-ratings — submit answer quality feedback
+const answerRatingsSchema = z.object({
+  ratings: z.array(
+    z.object({
+      question: z.string(),
+      rating: z.enum(['GOOD', 'NEEDS_IMPROVEMENT', 'WRONG']),
+    })
+  ),
+});
+
+applicationsRouter.post('/:id/answer-ratings', async (req: Request, res: Response) => {
+  try {
+    const { ratings } = answerRatingsSchema.parse(req.body);
+    const appId = paramId(req, 'id');
+    const app = await prisma.application.findUnique({
+      where: { id: appId },
+      include: { job: true },
+    });
+
+    if (!app) return res.status(404).json({ error: 'Application not found' });
+
+    const company = app.job.company;
+
+    for (const item of ratings) {
+      const { question, rating } = item;
+
+      // Find the question in AnswerBank
+      const bankEntry = await prisma.answerBank.findFirst({
+        where: {
+          question: { equals: question, mode: 'insensitive' },
+          OR: [{ company }, { company: '' }],
+        },
+      });
+
+      if (bankEntry) {
+        if (rating === 'GOOD') {
+          // Touch updatedAt to refresh TTL
+          await prisma.answerBank.update({
+            where: { id: bankEntry.id },
+            data: { updatedAt: new Date() },
+          });
+          logger.info(`AnswerBank entry boosted/refreshed: "${question}"`);
+        } else if (rating === 'WRONG' || rating === 'NEEDS_IMPROVEMENT') {
+          // Delete low quality or wrong entries so they can be regenerated/corrected
+          await prisma.answerBank.delete({
+            where: { id: bankEntry.id },
+          });
+          logger.info(`AnswerBank entry removed due to rating ${rating}: "${question}"`);
+        }
+      }
+    }
+
+    res.json({ success: true });
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return res.status(400).json({ error: 'Validation failed', details: error.errors });
+    }
+    logger.error('Failed to save answer ratings', { error });
+    res.status(500).json({ error: 'Failed to save answer ratings' });
+  }
+});
+

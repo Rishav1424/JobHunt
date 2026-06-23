@@ -12,19 +12,23 @@ export function isCompanySpecific(question: string, company: string): boolean {
   const c = company.toLowerCase();
   
   const indicators = [
-    'why',
-    'interest',
+    'why this company',
+    'why us',
+    'why join',
+    'why do you want to work',
+    'why do you want this',
+    'interest in',
     'cover letter',
     'this role',
     'our team',
     'about us',
-    'why do you want',
+    'our company',
     'values',
     'culture',
     'mission',
-    c
+    c  // company name itself
   ];
-  
+
   return indicators.some(ind => q.includes(ind));
 }
 
@@ -155,19 +159,13 @@ export async function pruneAnswerBank(): Promise<{ removed: number }> {
     });
 
     // Remove answers that are too short to be useful (< 3 chars: Y/N, ".", space etc.)
-    const shortEntries = await prisma.answerBank.deleteMany({
-      where: {
-        answer: { lt: '   ' }, // less-than hack: not reliable for all DBs, use raw below
-      },
-    });
-
-    // More reliable: raw query for answer length
+    // Use raw SQL for accurate length check — Prisma string comparison is lexicographic, not length-based
     const tinyAnswers = await prisma.$executeRaw`
       DELETE FROM "AnswerBank"
       WHERE length(trim(answer)) < 3
     `;
 
-    const removed = oldEntries.count + tinyAnswers;
+    const removed = oldEntries.count + Number(tinyAnswers);
     logger.info(`AnswerBank pruning complete: removed ${removed} stale/garbage entries`);
     return { removed };
   } catch (err) {

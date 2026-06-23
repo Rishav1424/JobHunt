@@ -9,7 +9,6 @@ import {
   FileText,
   Settings,
   Zap,
-  TrendingUp,
   Globe,
   Cpu,
   FileCode,
@@ -35,9 +34,8 @@ const NAV_ITEMS = [
   { href: '/scrapers', label: 'Scrapers', icon: Globe },
   { href: '/queues', label: 'Queues', icon: Cpu },
   { href: '/resume', label: 'Resume Studio', icon: FileCode },
-  { href: '/companies', label: 'Company Intelligence', icon: Building2 },
-  { href: '/analytics', label: 'Analytics', icon: TrendingUp },
-  { href: '/settings', label: 'Settings', icon: Settings },
+  { href: '/profile-health', label: 'Profile Health', icon: FileText },
+  { href: '/companies', label: 'Company Settings', icon: Building2 },
 ];
 
 export function AppSidebar() {

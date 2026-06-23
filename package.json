@@ -15,6 +15,7 @@
     "start:all": "concurrently -n \"api,worker,web\" -c \"cyan,magenta,green\" \"node backend/dist/index.js\" \"node backend/dist/workers/worker.js\" \"npm run start --prefix frontend\"",
     "db:push": "npm run db:push --prefix backend",
     "db:seed": "npm run db:seed --prefix backend",
+    "seed:profile": "npm run seed:profile --prefix backend",
     "db:studio": "npm run db:studio --prefix backend",
     "docker:up": "docker compose up -d",
     "docker:watch": "docker compose watch",

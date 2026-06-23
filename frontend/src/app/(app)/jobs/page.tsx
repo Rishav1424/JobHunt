@@ -106,14 +106,15 @@ export default function JobsPage() {
     }
   }, [activeTab, search, page, minScore, selectedSource, minSalary]);
 
+  // 1. Reset page to 1 when filters change
   useEffect(() => {
     setPage(1);
-    loadJobs();
-  }, [activeTab, search, minScore, selectedSource, minSalary, loadJobs]);
+  }, [activeTab, search, minScore, selectedSource, minSalary]);
 
+  // 2. Load jobs when loadJobs changes (which depends on filters and page)
   useEffect(() => {
     loadJobs();
-  }, [page, loadJobs]);
+  }, [loadJobs]);
 
   // Real-time listener: refresh when new jobs are scored
   useSocket('job:scored', () => {
@@ -486,7 +487,13 @@ export default function JobsPage() {
                   <TableCell className="text-right">
                     <div className="flex items-center justify-end gap-1.5">
                       <a
-                        href={job.url}
+                        href={(() => {
+                          try {
+                            const u = new URL(job.applyUrl || job.url);
+                            u.searchParams.set('__jh', job.id);
+                            return u.toString();
+                          } catch { return job.url; }
+                        })()}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="h-7 w-7 flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted rounded-md transition-colors"
@@ -540,7 +547,11 @@ export default function JobsPage() {
           <PaginationContent>
             <PaginationItem>
               <PaginationPrevious
-                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                href="#"
+                onClick={(e) => {
+                  e.preventDefault();
+                  if (page > 1) setPage((p) => p - 1);
+                }}
                 className={page === 1 ? 'pointer-events-none opacity-50' : 'cursor-pointer'}
               />
             </PaginationItem>
@@ -551,7 +562,11 @@ export default function JobsPage() {
             </PaginationItem>
             <PaginationItem>
               <PaginationNext
-                onClick={() => setPage((p) => p + 1)}
+                href="#"
+                onClick={(e) => {
+                  e.preventDefault();
+                  if (page < totalPages) setPage((p) => p + 1);
+                }}
                 className={page >= totalPages ? 'pointer-events-none opacity-50' : 'cursor-pointer'}
               />
             </PaginationItem>

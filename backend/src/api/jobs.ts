@@ -378,6 +378,19 @@ jobsRouter.post('/queues/:name/drain', async (req: Request, res: Response) => {
   }
 });
 
+// GET /api/jobs/system/logs — fetch cached logs from Redis
+jobsRouter.get('/system/logs', async (_req: Request, res: Response) => {
+  try {
+    const { redis } = require('../core/redis');
+    const rawLogs = await redis.lrange('system:logs:cache', 0, -1);
+    const logs = rawLogs.map((log: string) => JSON.parse(log)).reverse();
+    res.json(logs);
+  } catch (error) {
+    logger.error('GET /api/jobs/system/logs error', { error });
+    res.status(500).json({ error: 'Failed to fetch system logs cache' });
+  }
+});
+
 // GET /api/jobs/:id — get single job with full details
 jobsRouter.get('/:id', async (req: Request, res: Response) => {
   try {

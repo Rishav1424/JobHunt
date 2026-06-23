@@ -8,13 +8,13 @@
 
 ## 🏗️ System Architecture & Workflow
 
-The platform follows a **Human-in-the-Loop (HITL)** architecture designed to process intensive background operations (scraping, AI analysis) asynchronously while maintaining a real-time, dashboard-driven admin panel.
+The platform follows a **Human-in-the-Loop (HITL)** architecture designed to process intensive background operations (scraping, inline AI refinement) asynchronously while maintaining a real-time, dashboard-driven admin panel.
 
 ```
                    ┌───────────────────────────────────────────────┐
                    │               FRONTEND DASHBOARD              │
                    │         (Next.js 16 + Tailwind CSS v4)        │
-                   │ - Job Queue & Stats  - Settings Config  - Monaco  │
+                   │ - Profile Health & Editors - Settings & Stats  │
                    └───────────────┬───────────────────────▲───────┘
                                    │ REST (Axios)          │ WebSockets (Socket.io)
                                    ▼                       │
@@ -26,30 +26,31 @@ The platform follows a **Human-in-the-Loop (HITL)** architecture designed to pro
                                    ▼                       ▼
                    ┌──────────────────────────────┐┌───────────────┴───────┐
                    │    REDIS (BullMQ Queues)     ││  DATABASE (Postgres)  │
-                   │ - job-scraping - job-scoring ││ - Prisma Client ORM   │
-                   └───────────────┬──────────────┘└───────▲───────────────┘
-                                   │ worker processes      │ reads / writes
+                   │ - job-scraping               ││ - Prisma Client ORM   │
+                   └───────────────┬──────────────┘│ - pgvector (768-D)    │
+                                   │ worker processes └────▲───────────────┘
                                    ▼                       │
                    ┌───────────────────────────────────────┴───────┐
                    │            BULLMQ BACKGROUND WORKERS          │
                    │ - Playwright Headless Scraping & Details      │
-                   │ - Gemini AI Engine (Dimensional Fit scoring)  │
+                   │ - Gemini AI Inline scoring & 768-D Embeddings │
                    └───────────────────────┬───────────────────────┘
                                            │
-                                           ▼ (Optional Copilot link)
+                                           ▼ (Real-time Copilot Link)
                    ┌───────────────────────────────────────────────┐
                    │          CHROME COPILOT EXTENSION             │
                    │            (Vite + React + CRXJS)             │
-                   │ - DOM Form Extraction - Autofill Form Inject  │
+                   │ - 19-State Sense-Plan-Act Loop (in Redis)     │
+                   │ - DOM Form Extraction & Auto-injection        │
                    └───────────────────────────────────────────────┘
 ```
 
 ### 🔄 The Application Lifecycle
 1. **Scraping**: Background workers trigger scrapers (LinkedIn, Naukri, Wellfound, RemoteOK, YCombinator, Adzuna, ATS, etc.) to capture new listings.
 2. **Filtering**: Deterministic filters discard irrelevant job titles and low salary ranges.
-3. **Scoring**: A composite vector-similarity and multi-dimensional Gemini AI model grades remaining jobs on a 0-100 scale.
+3. **Scoring**: A composite vector-similarity (768-D) and multi-dimensional Gemini AI model grades remaining jobs on a 0-100 scale inline during the scraping phase.
 4. **Calibration**: Future scores self-calibrate using feedback Cap-lists containing your last 10 approved and skipped jobs.
-5. **Dashboard Actions**: You review jobs, click **Tailor Resume** to rewrite your LaTeX profile dynamically, or click **Autofill** via the browser extension to complete Greenhouse/Lever forms in 1 click.
+5. **Dashboard Actions**: You review jobs, click **Tailor Resume** to rewrite your LaTeX profile dynamically, or click **Autofill** via the browser extension to complete Greenhouse/Lever forms in 1 click using the 19-state agent loop.
 
 ---
 
@@ -67,12 +68,12 @@ JobHunt/
 │       ├── jobs/       # BullMQ queue & scheduler definitions
 │       ├── scripts/    # Database seeding, manual requeue, and test scripts
 │       ├── services/
-│       │   ├── ai-engine/  # Gemini LLM wrappers, feedback logic, resume tailoring
+│       │   ├── ai-engine/  # Gemini LLM wrappers, feedback logic, resume tailoring, 19-state autofill agent
 │       │   └── scrapers/   # Scraper orchestrator & platform implementations
 │       └── workers/    # BullMQ Worker entrypoint
 ├── frontend/           # Next.js 16 Web Dashboard UI
 │   └── src/
-│       ├── app/        # App router folders: analytics, applications, jobs, settings
+│       ├── app/        # App router folders: analytics, applications, companies, dashboard, jobs, profile-health
 │       ├── components/ # Shared UI items (Job Cards, App Sidebar, Shadcn UI)
 │       └── lib/        # API endpoints configurations & types definitions
 └── extension/          # Chrome Copilot Extension
@@ -86,13 +87,14 @@ JobHunt/
 - **[`prisma/schema.prisma`](file:///c:/Users/Lenovo/Code/JobHunt/backend/prisma/schema.prisma)**: Defines the database schema, including indexing for performance and relationships between `Job`, `Application`, `UserProfile`, `Settings`, `KnowledgeChunk` (for RAG), and `AnswerBank` (cached Q&A).
 - **[`src/core/scraperHealth.ts`](file:///c:/Users/Lenovo/Code/JobHunt/backend/src/core/scraperHealth.ts)**: A Redis-backed **Circuit Breaker** protecting scrapers. Automatically trips to `OPEN` after 3 consecutive failures to skip the broken scraper, transitioning back to `CLOSED` after a 2-hour cooldown.
 - **[`src/services/ai-engine/scorer.ts`](file:///c:/Users/Lenovo/Code/JobHunt/backend/src/services/ai-engine/scorer.ts)**: Computes cosine similarity of the candidate embedding vs job listing, checks deterministic cutoffs (YOE, salary), and feeds details into Gemini for multi-dimensional grading (Tech stack, Seniority, Domain, Compensation, Company tier).
-- **[`src/services/ai-engine/autofillGraph.ts`](file:///c:/Users/Lenovo/Code/JobHunt/backend/src/services/ai-engine/autofillGraph.ts)**: Stateful, graph-based form-filling agent using RAG and previous answer banks to resolve custom application questions.
+- **[`src/services/ai-engine/autofillAgent.ts`](file:///c:/Users/Lenovo/Code/JobHunt/backend/src/services/ai-engine/autofillAgent.ts)**: Stateful 19-state sense-plan-act form-filling agent using RAG and previous answer banks to resolve custom application questions.
 
 ### 2. Frontend Dashboard (`frontend/`)
 - Built on **React 19 + Next.js 16** with Tailwind CSS v4.
-- Includes a full **Monaco Code Editor** integration for on-the-fly LaTeX editing of your base profile.
+- Includes a consolidated **Profile Health** dashboard under `/profile-health`, featuring Monaco-based LaTeX and `ProfileData.md` editors alongside RAG coverage checklists.
+- Includes consolidated general settings (scraper parameters and scoring simulator) alongside directories under `/companies` (Company Settings).
 - **Real-time Synchronization** powered by WebSockets (`Socket.io`) updates scraping/scoring states.
-- Recharts-based **Analytics Panels** to track application funnels, target salary statistics, and source distributions.
+- Recharts-based **Analytics Page** under `/analytics` to track application funnels, target salary statistics, and source distributions.
 
 ### 3. Chrome Extension (`extension/`)
 - Uses **Vite + CRXJS Vite Plugin** for fast Hot Module Replacement (HMR) in extension development.
